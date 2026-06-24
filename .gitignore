@@ -1,0 +1,11 @@
+node_modules/
+out/
+release/
+.tool-cache/
+resources/bin/
+.env
+*.local
+recordings/
+temp/
+.DS_Store
+Thumbs.db

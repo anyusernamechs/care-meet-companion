@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CARE Meet Companion</title>
+    <link rel="icon" type="image/png" href="./assets/logo.png" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="focus-rail" class="focus-rail" title="Show controls (Alt+Shift+M)">
+      <img class="focus-rail-logo" src="./assets/logo.png" alt="CARE" width="28" height="28" />
+      <button id="expand-panel-button" type="button" class="focus-rail-button" aria-label="Show panel">
+        <span aria-hidden="true">›</span>
+      </button>
+    </div>
+
+    <div id="app-shell" class="app-shell">
+      <header class="app-topbar">
+        <div class="topbar-brand">
+          <img class="topbar-logo" src="./assets/logo.png" alt="CARE" width="26" height="26" />
+          <p class="topbar-title">CARE Meet Companion</p>
+        </div>
+        <button
+          id="focus-mode-button"
+          type="button"
+          class="collapse-button"
+          title="Hide panel (Alt+Shift+M)"
+          aria-label="Hide panel"
+        >
+          <span class="collapse-chevron" aria-hidden="true">‹</span>
+        </button>
+      </header>
+
+      <main class="sidebar-content">
+        <section class="card hero-meeting-card">
+          <div class="card-heading row">
+            <h2 class="card-title">Current meeting</h2>
+            <button id="refresh-calendar-button" type="button" class="ghost compact" disabled>
+              Refresh
+            </button>
+          </div>
+
+          <div id="hero-meeting" class="hero-meeting">
+            <p id="hero-meeting-badge" class="hero-badge hidden">Happening now</p>
+            <h3 id="hero-meeting-title" class="hero-title">Select a meeting</h3>
+            <p id="hero-meeting-time" class="hero-meta"></p>
+            <p id="hero-meeting-link" class="hero-link"></p>
+          </div>
+
+          <label class="label sr-only" for="calendar-meeting-select">Switch meeting</label>
+          <select id="calendar-meeting-select" class="meeting-switcher" disabled>
+            <option value="">Connect Google to see your meetings</option>
+          </select>
+          <p id="calendar-status" class="hint"></p>
+
+          <div class="hero-actions">
+            <button id="open-meet-button" type="button" class="primary" disabled>Join meeting here</button>
+            <div class="hero-actions-row">
+              <button id="open-meet-browser-button" type="button" class="secondary" disabled>
+                Open in browser
+              </button>
+              <button id="copy-meet-link-button" type="button" class="secondary" disabled>Copy link</button>
+            </div>
+          </div>
+          <p id="meet-status" class="hint">Meet opens in the panel on the right.</p>
+        </section>
+
+        <section class="card recording-card">
+          <div class="card-heading">
+            <h2 class="card-title">Recording</h2>
+          </div>
+
+          <p class="label">Mode</p>
+          <fieldset class="mode-picker">
+            <legend class="sr-only">Recording mode</legend>
+            <label class="mode-option">
+              <input type="radio" name="session-mode" value="record" checked />
+              <span class="mode-copy">
+                <span class="mode-title">Record meeting</span>
+                <span class="mode-hint">Video + audio + transcript</span>
+              </span>
+            </label>
+            <label class="mode-option">
+              <input type="radio" name="session-mode" value="notes-only" />
+              <span class="mode-copy">
+                <span class="mode-title">Notes only</span>
+                <span class="mode-hint">Transcript only, no video</span>
+              </span>
+            </label>
+          </fieldset>
+
+          <label class="label" for="meeting-title">Session title</label>
+          <input id="meeting-title" type="text" placeholder="IT Check In" />
+
+          <div id="record-source-options">
+            <label class="label" for="capture-mode-select">Capture source</label>
+            <select id="capture-mode-select">
+              <option value="meet-tab">Meet tab in app (recommended)</option>
+              <option value="window">Browser window</option>
+              <option value="screen">Full screen</option>
+            </select>
+
+            <div id="source-picker" class="hidden">
+              <label class="label" for="source-select">Window / screen</label>
+              <select id="source-select">
+                <option value="">Loading sources...</option>
+              </select>
+              <div id="source-preview" class="source-preview hidden">
+                <img id="source-thumbnail" alt="Selected source preview" />
+                <p id="source-name" class="value"></p>
+              </div>
+            </div>
+          </div>
+
+          <p id="caption-reminder" class="hint">
+            For names in the transcript: turn on CC in Meet, then open caption settings and enable speaker names.
+          </p>
+
+          <p id="notes-only-hint" class="hint hidden">
+            Notes use Meet captions (turn CC on yourself). No video is saved.
+          </p>
+
+          <div id="session-ready" class="session-status session-ready">
+            <span class="status-pill status-pill-ready" id="ready-status-pill">Ready</span>
+            <p id="ready-status-text" class="status-headline">Ready to record</p>
+          </div>
+
+          <div id="session-active" class="session-status session-active hidden">
+            <p id="recording-timer" class="recording-timer">00:00</p>
+            <ul class="capture-status-list">
+              <li id="status-video"><span class="dot"></span>Video: idle</li>
+              <li id="status-audio"><span class="dot"></span>Audio: idle</li>
+              <li id="status-transcript"><span class="dot"></span>Transcript: idle</li>
+            </ul>
+          </div>
+
+          <div id="session-processing" class="session-status session-processing hidden">
+            <span class="status-pill status-pill-busy">Working</span>
+            <p id="status-message" class="status-headline">Processing...</p>
+          </div>
+
+          <label class="notice-row">
+            <input id="recording-notice-checkbox" type="checkbox" checked />
+            <span>Show recording notice before start</span>
+          </label>
+
+          <p class="label after-promise-label">After recording</p>
+          <ul id="after-promise-list" class="after-promise"></ul>
+
+          <div class="primary-action">
+            <button id="start-button" type="button" class="primary primary-large">Start recording</button>
+            <button id="stop-button" type="button" class="danger primary-large hidden" disabled>
+              Stop and upload
+            </button>
+          </div>
+
+          <section id="complete-card" class="complete-inline hidden">
+            <p class="complete-title">All done</p>
+            <p id="complete-message" class="complete-message"></p>
+            <button id="new-recording-button" type="button" class="secondary">Start another session</button>
+          </section>
+        </section>
+
+        <section class="card drive-card">
+          <div class="card-heading">
+            <h2 class="card-title">Upload destination</h2>
+            <p class="card-subtitle">Local first, then Drive</p>
+          </div>
+          <p class="label">Folder</p>
+          <p id="drive-folder-label" class="destination-value">Not selected</p>
+          <p id="drive-destination-hint" class="hint">
+            Recordings save locally first. Choose a Drive folder for automatic upload.
+          </p>
+          <div class="drive-actions">
+            <button id="choose-drive-folder-button" type="button" class="secondary compact" disabled>
+              Choose Drive folder
+            </button>
+            <button id="clear-drive-folder-button" type="button" class="link-button hidden">Remove</button>
+          </div>
+          <div id="drive-browser" class="drive-browser hidden">
+            <label class="label" for="drive-root-select">Location</label>
+            <select id="drive-root-select"></select>
+            <p id="drive-breadcrumb" class="hint"></p>
+            <ul id="drive-folder-list" class="drive-folder-list"></ul>
+            <div class="drive-browser-actions">
+              <button id="drive-select-here-button" type="button" class="primary">Upload here</button>
+              <button id="drive-browser-cancel-button" type="button" class="secondary">Cancel</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card auth-card">
+          <div class="card-heading row">
+            <div>
+              <h2 class="card-title">Google account</h2>
+            </div>
+            <button id="auth-button" type="button" class="secondary compact">Connect</button>
+          </div>
+          <p id="auth-status" class="value">Checking sign-in...</p>
+        </section>
+
+        <div class="footer-links">
+          <button id="open-folder-button" type="button" class="link-button">Open recordings folder</button>
+          <p id="recordings-path" class="path-note"></p>
+        </div>
+      </main>
+
+      <footer class="app-status-bar">
+        <p id="app-status-bar-text">Checking status...</p>
+      </footer>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
