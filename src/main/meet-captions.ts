@@ -1,7 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import { app } from 'electron'
 import type { WebContents } from 'electron'
 import { getMeetView } from './meet-view'
+import { log } from './logger'
+import { getHostDisplayName } from './services/google-auth'
 import { reportMeetCallState } from './meet-session-monitor'
 
 export interface MeetCaptionLine {
@@ -12,6 +15,7 @@ export interface MeetCaptionLine {
 
 interface CaptionStore {
   sessionId: string
+  hostDisplayName?: string
   lines: MeetCaptionLine[]
 }
 
@@ -19,11 +23,37 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 let activeSessionId = ''
 let captionFilePath = ''
 let injectScript = ''
+let injectScriptMissingLogged = false
+let sessionHostDisplayName = ''
+
+function resolveInjectScriptPath(): string {
+  const bundled = join(__dirname, 'meet-caption-inject.js')
+  const devSource = join(process.cwd(), 'src', 'main', 'meet-caption-inject.js')
+
+  if (!app.isPackaged && existsSync(devSource)) {
+    return devSource
+  }
+  if (existsSync(bundled)) {
+    return bundled
+  }
+  if (existsSync(devSource)) {
+    return devSource
+  }
+
+  throw new Error(
+    'meet-caption-inject.js is missing. Restart with npm run dev, or run npm run build.'
+  )
+}
 
 function loadInjectScript(): string {
   if (!injectScript) {
-    injectScript = readFileSync(join(__dirname, 'meet-caption-inject.js'), 'utf8')
+    injectScript = readFileSync(resolveInjectScriptPath(), 'utf8')
   }
+  return injectScript
+}
+
+function reloadInjectScript(): string {
+  injectScript = readFileSync(resolveInjectScriptPath(), 'utf8')
   return injectScript
 }
 
@@ -47,10 +77,111 @@ function writeStore(store: CaptionStore): void {
   writeFileSync(captionFilePath, JSON.stringify(store, null, 2), 'utf8')
 }
 
+function resolveCaptionSpeaker(speaker: string, hostDisplayName?: string): string {
+  const trimmed = speaker.trim()
+  if (!/^you$/i.test(trimmed)) return trimmed
+  return hostDisplayName?.trim() || trimmed
+}
+
+function normalizeCaptionLine(line: MeetCaptionLine, hostDisplayName?: string): MeetCaptionLine {
+  return {
+    ...line,
+    speaker: resolveCaptionSpeaker(line.speaker, hostDisplayName)
+  }
+}
+
+function isCaptionRevision(older: string, newer: string): boolean {
+  const a = older.trim().toLowerCase()
+  const b = newer.trim().toLowerCase()
+  if (!a || !b) return false
+  if (a === b) return true
+  if (b.startsWith(a)) {
+    const next = b[a.length]
+    if (!next || /[\s.,!?;:]/.test(next)) return true
+  }
+  if (a.startsWith(b)) {
+    const next = a[b.length]
+    if (!next || /[\s.,!?;:]/.test(next)) return true
+  }
+  return false
+}
+
+function isMeetChromeCaption(text: string): boolean {
+  const t = text.trim()
+  if (!t) return true
+  return (
+    /returning to home screen/i.test(t) ||
+    /\d+\s*seconds?\s*left/i.test(t) ||
+    /left in \d+/i.test(t) ||
+    /you left the meeting/i.test(t) ||
+    /rejoin the meeting/i.test(t) ||
+    /thanks for joining/i.test(t) ||
+    /meeting has ended/i.test(t) ||
+    /return to home screen/i.test(t)
+  )
+}
+
+function stripSpeakerPrefix(speaker: string, text: string): string {
+  const s = speaker.trim()
+  let t = text.trim()
+  if (!t) return ''
+  if (!s || /^participant$/i.test(s)) return t
+  if (t.toLowerCase().startsWith(s.toLowerCase())) {
+    t = t.slice(s.length).trim()
+  }
+  return t
+}
+
+function cleanCaptionLine(line: MeetCaptionLine): MeetCaptionLine | null {
+  const text = stripSpeakerPrefix(line.speaker, line.text)
+  if (!text || isMeetChromeCaption(text)) return null
+  return { ...line, text }
+}
+
+export function filterCaptionsForTranscript(lines: MeetCaptionLine[]): MeetCaptionLine[] {
+  return dedupeProgressiveCaptions(lines)
+    .map((line) => cleanCaptionLine(line))
+    .filter((line): line is MeetCaptionLine => line !== null)
+}
+
+export function dedupeProgressiveCaptions(lines: MeetCaptionLine[]): MeetCaptionLine[] {
+  const out: MeetCaptionLine[] = []
+
+  for (const line of lines) {
+    const prev = out[out.length - 1]
+    if (prev && prev.speaker === line.speaker && isCaptionRevision(prev.text, line.text)) {
+      if (line.text.trim().length >= prev.text.trim().length) {
+        out[out.length - 1] = line
+      }
+      continue
+    }
+    out.push(line)
+  }
+
+  return out
+}
+
+function mergeIntoStore(store: CaptionStore, incoming: MeetCaptionLine[]): void {
+  for (const line of incoming) {
+    const prev = store.lines[store.lines.length - 1]
+    if (prev && prev.speaker === line.speaker && isCaptionRevision(prev.text, line.text)) {
+      if (line.text.trim().length >= prev.text.trim().length) {
+        store.lines[store.lines.length - 1] = line
+      }
+      continue
+    }
+    store.lines.push(line)
+  }
+}
+
 function appendLines(lines: MeetCaptionLine[]): void {
   if (!lines.length) return
   const store = readStore()
-  store.lines.push(...lines)
+  const hostName = store.hostDisplayName || sessionHostDisplayName
+  mergeIntoStore(
+    store,
+    lines.map((line) => normalizeCaptionLine(line, hostName))
+  )
   writeStore(store)
 }
 
@@ -60,25 +191,45 @@ async function runInMeet<T>(runner: string, webContents?: WebContents): Promise<
   if (!target || target.isDestroyed()) return null
 
   try {
-    await target.executeJavaScript(loadInjectScript(), true)
+    const script = app.isPackaged ? loadInjectScript() : reloadInjectScript()
+    await target.executeJavaScript(script, true)
     return await target.executeJavaScript(runner, true)
-  } catch {
+  } catch (error) {
+    if (!injectScriptMissingLogged) {
+      injectScriptMissingLogged = true
+      log.warn('meet-captions', 'Meet script failed', error)
+    }
     return null
   }
 }
 
-export async function getMeetCaptionStatus(): Promise<{ on: boolean }> {
+export async function getMeetCaptionStatus(): Promise<{
+  on: boolean
+  regionFound: boolean
+  visibleRows: number
+  linesCaptured: number
+  hasSpeakerNames: boolean
+}> {
   const view = getMeetView()
   if (!view || view.webContents.isDestroyed()) {
-    return { on: false }
+    return { on: false, regionFound: false, visibleRows: 0, linesCaptured: 0, hasSpeakerNames: false }
   }
 
-  const status = await runInMeet<{ on: boolean }>(
-    'window.__careMeetCaptions?.captionStatus?.() || { on: false }',
+  const status = await runInMeet<{ on: boolean; regionFound?: boolean; visibleRows?: number }>(
+    'window.__careMeetCaptions?.captionStatus?.() || { on: false, regionFound: false, visibleRows: 0 }',
     view.webContents
   )
 
-  return { on: Boolean(status?.on) }
+  const store = readStore()
+  const lines = store.lines || []
+
+  return {
+    on: Boolean(status?.on),
+    regionFound: Boolean(status?.regionFound),
+    visibleRows: status?.visibleRows ?? 0,
+    linesCaptured: lines.length,
+    hasSpeakerNames: captionsIncludeSpeakerNames(lines)
+  }
 }
 
 export async function startMeetCaptionCapture(sessionId: string, sessionDir: string): Promise<void> {
@@ -94,20 +245,22 @@ export async function startMeetCaptionCapture(sessionId: string, sessionDir: str
 
     activeSessionId = sessionId
     captionFilePath = getCaptionFilePath(sessionId, sessionDir)
-    writeStore({ sessionId, lines: [] })
+    sessionHostDisplayName = getHostDisplayName() || ''
+    writeStore({ sessionId, hostDisplayName: sessionHostDisplayName, lines: [] })
 
     const view = getMeetView()
     if (!view || view.webContents.isDestroyed()) return
 
     await runInMeet('true', view.webContents)
+    await runInMeet('window.__careMeetCaptions?.tryEnableCaptions?.(); true', view.webContents)
     await runInMeet('window.__careMeetCaptions?.startCapture?.(); true', view.webContents)
     await runInMeet('window.__careMeetCaptions?.tryEnableSpeakerNames?.(); true', view.webContents)
 
     pollTimer = setInterval(() => {
       void pollMeetCaptions()
-    }, 750)
+    }, 500)
   } catch (error) {
-    console.error('Failed to start Meet caption capture:', error)
+    log.error('meet-captions', 'Failed to start Meet caption capture', error)
   }
 }
 
@@ -148,7 +301,7 @@ export async function stopMeetCaptionCapture(): Promise<MeetCaptionLine[]> {
 
   const store = readStore()
   activeSessionId = ''
-  return store.lines
+  return filterCaptionsForTranscript(store.lines)
 }
 
 export function loadMeetCaptions(sessionDir: string): MeetCaptionLine[] {
@@ -156,16 +309,19 @@ export function loadMeetCaptions(sessionDir: string): MeetCaptionLine[] {
   if (!existsSync(path)) return []
   try {
     const store = JSON.parse(readFileSync(path, 'utf8')) as CaptionStore
-    return store.lines || []
+    const hostName = store.hostDisplayName || getHostDisplayName()
+    const normalized = (store.lines || []).map((line) => normalizeCaptionLine(line, hostName))
+    return filterCaptionsForTranscript(normalized)
   } catch {
     return []
   }
 }
 
 export function formatMeetCaptionTranscript(lines: MeetCaptionLine[]): string {
-  if (!lines.length) return ''
+  const cleaned = filterCaptionsForTranscript(lines)
+  if (!cleaned.length) return ''
 
-  const body = lines
+  const body = cleaned
     .map((line) => {
       const time = new Date(line.at).toLocaleTimeString([], {
         hour: 'numeric',
@@ -185,14 +341,15 @@ export function formatMeetCaptionTranscript(lines: MeetCaptionLine[]): string {
 }
 
 export function hasUsableMeetCaptions(lines: MeetCaptionLine[]): boolean {
-  const textLength = lines.reduce((sum, line) => sum + line.text.trim().length, 0)
-  return lines.length >= 1 && textLength >= 12
+  const cleaned = filterCaptionsForTranscript(lines)
+  const textLength = cleaned.reduce((sum, line) => sum + line.text.trim().length, 0)
+  return cleaned.length >= 1 && textLength >= 12
 }
 
 export function captionsIncludeSpeakerNames(lines: MeetCaptionLine[]): boolean {
   const named = lines.filter((line) => {
     const speaker = line.speaker?.trim() || ''
-    return speaker.length > 0 && speaker !== 'Participant'
+    return speaker.length > 0 && speaker !== 'Participant' && !/^you$/i.test(speaker)
   })
   return named.length >= 1
 }

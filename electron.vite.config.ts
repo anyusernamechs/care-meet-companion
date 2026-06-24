@@ -17,7 +17,8 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'src/preload/index.ts')
+          index: resolve(__dirname, 'src/preload/index.ts'),
+          'drive-picker': resolve(__dirname, 'src/preload/drive-picker.ts')
         }
       }
     }
@@ -27,7 +28,8 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'src/renderer/index.html')
+          index: resolve(__dirname, 'src/renderer/index.html'),
+          'drive-picker': resolve(__dirname, 'src/renderer/drive-picker/index.html')
         }
       }
     }

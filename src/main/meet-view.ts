@@ -1,6 +1,7 @@
 import { BrowserView, BrowserWindow, session, shell } from 'electron'
 import { installMeetNavigationMonitor } from './meet-session-monitor'
 import { isRecordingActive } from './recording-state'
+import { isAllowedExternalUrl, normalizeMeetUrl, normalizeExternalUrl } from './url-policy'
 
 export const SIDEBAR_WIDTH = 400
 export const FOCUS_RAIL_WIDTH = 44
@@ -154,9 +155,16 @@ export function ensureMeetView(mainWindow: BrowserWindow): BrowserView {
       partition: GOOGLE_SESSION_PARTITION,
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
       backgroundThrottling: false
     }
+  })
+
+  meetView.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedExternalUrl(url)) {
+      void shell.openExternal(url)
+    }
+    return { action: 'deny' }
   })
 
   meetView.webContents.setUserAgent(CHROME_USER_AGENT)
@@ -182,12 +190,12 @@ export function applySidebarLayout(mainWindow: BrowserWindow, expanded: boolean)
 
 export function openMeetUrl(mainWindow: BrowserWindow, url: string): void {
   const view = ensureMeetView(mainWindow)
-  const target = url.trim() || 'https://meet.google.com'
+  const target = normalizeMeetUrl(url)
   void view.webContents.loadURL(target)
 }
 
 export function openMeetInBrowser(url: string): void {
-  void shell.openExternal(url.trim() || 'https://meet.google.com')
+  void shell.openExternal(normalizeExternalUrl(url))
 }
 
 export function prepareMeetForRecording(mainWindow: BrowserWindow): boolean {

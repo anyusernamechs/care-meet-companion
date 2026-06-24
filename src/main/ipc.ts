@@ -1,17 +1,13 @@
-import { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, shell } from 'electron'
+import type { OpenDialogOptions } from 'electron'
+import { mkdirSync } from 'fs'
 import { join } from 'path'
+import { setMainWindow, getMainWindow } from './app-window'
 import { getAppIconPath } from './branding'
 import { loadConfig } from './config'
-import { appendChunk, beginNotesSession, beginSession, processRecording } from './services/pipeline'
-import { getRecordingsRoot, resolveSessionFolderName } from './paths'
-import { getAuthStatus, startGoogleAuth } from './services/drive'
-import { listDriveFolders, listDriveRoots } from './services/drive-browser'
-import {
-  clearDriveDestination,
-  loadDriveDestination,
-  saveDriveDestination
-} from './services/drive-settings'
-import { getCurrentOrNextMeeting, listCalendarMeetings } from './services/calendar'
+import { trustedHandler } from './ipc-guard'
+import { log } from './logger'
+import { registerSession } from './session-registry'
 import {
   configureMeetTabCapture,
   prepareCapture,
@@ -19,7 +15,8 @@ import {
   setCaptureMode,
   setSelectedCaptureSource
 } from './capture'
-import { setRecordingActive } from './recording-state'
+import { getMeetCaptionStatus, startMeetCaptionCapture } from './meet-captions'
+import { markMeetCallActive, onMeetCallEnded, resetMeetCallMonitor } from './meet-session-monitor'
 import {
   applySidebarLayout,
   ensureMeetView,
@@ -31,16 +28,35 @@ import {
   PANEL_SEPARATOR,
   SIDEBAR_WIDTH
 } from './meet-view'
-import { getCaptureMode } from './capture'
-import { getMeetCaptionStatus, startMeetCaptionCapture } from './meet-captions'
-import { markMeetCallActive, onMeetCallEnded, resetMeetCallMonitor } from './meet-session-monitor'
-import { ensureMicrophoneAccess, openMicrophoneSettings, resetMicrophonePermissions } from './permissions'
+import { getRecordingsRoot, resolveSessionFolderName } from './paths'
+import {
+  confirmMicrophoneGranted,
+  ensureMicrophoneAccess,
+  getMicrophonePermissionStatus,
+  initializeMicrophonePermission,
+  markMicrophoneDenied,
+  openMicrophoneSettings,
+  resetMicrophonePermissions
+} from './permissions'
+import { setRecordingActive } from './recording-state'
+import { listCalendarMeetings, getCurrentOrNextMeeting } from './services/calendar'
+import { pickDriveFolder, registerDrivePickerIpc } from './services/drive-picker-window'
+import {
+  isRecordingsDirectoryLocked,
+  saveRecordingsDirectory
+} from './services/recordings-settings'
+import {
+  clearDriveDestination,
+  loadDriveDestination,
+  saveDriveDestination
+} from './services/drive-settings'
+import { establishFolderAccess, getAuthStatus, startGoogleAuth } from './services/drive'
+import { appendChunk, beginNotesSession, beginSession, processRecording } from './services/pipeline'
 import type { CaptureMode, CaptureSource, MeetCallEndedEvent, SessionMode } from '../shared/types'
+import { assertTrustedRenderer } from './ipc-guard'
 
-let mainWindow: BrowserWindow | null = null
 const progressCallbacks = new Set<(message: string) => void>()
 const meetEndedCallbacks = new Set<(event: MeetCallEndedEvent) => void>()
-
 const sidebarCallbacks = new Set<(expanded: boolean) => void>()
 
 function getWindowIcon() {
@@ -49,6 +65,7 @@ function getWindowIcon() {
 }
 
 function notifySidebarChanged(expanded: boolean): void {
+  const mainWindow = getMainWindow()
   for (const callback of sidebarCallbacks) {
     callback(expanded)
   }
@@ -58,13 +75,14 @@ function notifySidebarChanged(expanded: boolean): void {
 }
 
 function toggleSidebar(): void {
+  const mainWindow = getMainWindow()
   if (!mainWindow || mainWindow.isDestroyed()) return
   applySidebarLayout(mainWindow, !isSidebarExpanded())
   notifySidebarChanged(isSidebarExpanded())
 }
 
 export function createMainWindow(): BrowserWindow {
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: SIDEBAR_WIDTH + PANEL_SEPARATOR + 640,
@@ -77,28 +95,31 @@ export function createMainWindow(): BrowserWindow {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true
     }
   })
 
+  setMainWindow(window)
+
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+    window.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    window.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
-  installMeetWindowHandlers(mainWindow)
+  installMeetWindowHandlers(window)
 
-  mainWindow.on('closed', () => {
-    mainWindow = null
+  window.on('closed', () => {
+    setMainWindow(null)
   })
 
-  ensureMeetView(mainWindow)
+  ensureMeetView(window)
 
-  return mainWindow
+  return window
 }
 
 export function registerIpcHandlers(): void {
+  registerDrivePickerIpc()
   registerDisplayMediaHandler()
 
   onMeetCallEnded((reason) => {
@@ -108,152 +129,202 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle('care:get-config', () => {
-    const config = loadConfig()
-    return {
-      recordingsDir: config.recordingsDir,
-      whisperEnabled: config.whisperEnabled,
-      transcriptionReady: config.bundledToolsReady,
-      driveFolderId: config.driveFolderId,
-      driveFolderLabel: config.driveFolderLabel
-    }
-  })
-
-  ipcMain.handle('care:get-capture-sources', async (): Promise<CaptureSource[]> => {
-    const sources = await desktopCapturer.getSources({
-      types: ['window', 'screen'],
-      thumbnailSize: { width: 320, height: 180 },
-      fetchWindowIcons: true
+  ipcMain.handle(
+    'care:get-config',
+    trustedHandler(() => {
+      const config = loadConfig()
+      return {
+        recordingsDir: config.recordingsDir,
+        recordingsDirLocked: isRecordingsDirectoryLocked(),
+        whisperEnabled: config.whisperEnabled,
+        transcriptionReady: config.bundledToolsReady,
+        driveFolderId: config.driveFolderId,
+        driveFolderLabel: config.driveFolderLabel
+      }
     })
+  )
 
-    return sources.map((source) => ({
-      id: source.id,
-      name: source.name,
-      thumbnail: source.thumbnail.toDataURL(),
-      appIcon: source.appIcon?.toDataURL(),
-      displayId: source.display_id
-    }))
-  })
+  ipcMain.handle(
+    'care:get-capture-sources',
+    trustedHandler(async (): Promise<CaptureSource[]> => {
+      const sources = await desktopCapturer.getSources({
+        types: ['window', 'screen'],
+        thumbnailSize: { width: 320, height: 180 },
+        fetchWindowIcons: true
+      })
 
-  ipcMain.handle('care:prepare-capture', () => {
-    if (!mainWindow) {
-      return { ready: false, message: 'Application window is not ready.' }
-    }
-    return prepareCapture(mainWindow)
-  })
+      return sources.map((source) => ({
+        id: source.id,
+        name: source.name,
+        thumbnail: source.thumbnail.toDataURL(),
+        appIcon: source.appIcon?.toDataURL(),
+        displayId: source.display_id
+      }))
+    })
+  )
 
-  ipcMain.handle('care:ensure-microphone-access', async () => ensureMicrophoneAccess())
+  ipcMain.handle(
+    'care:prepare-capture',
+    trustedHandler(() => {
+      const mainWindow = getMainWindow()
+      if (!mainWindow) {
+        return { ready: false, message: 'Application window is not ready.' }
+      }
+      return prepareCapture(mainWindow)
+    })
+  )
 
-  ipcMain.handle('care:open-microphone-settings', () => {
-    openMicrophoneSettings()
-  })
+  ipcMain.handle('care:ensure-microphone-access', trustedHandler(async () => ensureMicrophoneAccess()))
+  ipcMain.handle(
+    'care:get-microphone-permission-status',
+    trustedHandler(() => getMicrophonePermissionStatus())
+  )
+  ipcMain.handle(
+    'care:initialize-microphone',
+    trustedHandler(async () => initializeMicrophonePermission())
+  )
+  ipcMain.handle('care:confirm-microphone-granted', trustedHandler(() => {
+    confirmMicrophoneGranted()
+  }))
+  ipcMain.handle('care:mark-microphone-denied', trustedHandler(() => {
+    markMicrophoneDenied()
+  }))
+  ipcMain.handle('care:open-microphone-settings', trustedHandler(() => openMicrophoneSettings()))
+  ipcMain.handle(
+    'care:reset-microphone-permissions',
+    trustedHandler(async () => resetMicrophonePermissions())
+  )
 
-  ipcMain.handle('care:reset-microphone-permissions', async () => {
-    await resetMicrophonePermissions()
-  })
+  ipcMain.handle(
+    'care:set-capture-mode',
+    trustedHandler((_event, mode: CaptureMode) => {
+      setCaptureMode(mode)
+    })
+  )
 
-  ipcMain.handle('care:set-capture-mode', (_event, mode: CaptureMode) => {
-    setCaptureMode(mode)
-  })
-
-  ipcMain.handle('care:set-capture-source', (_event, sourceId: string) => {
-    setSelectedCaptureSource(sourceId)
-  })
+  ipcMain.handle(
+    'care:set-capture-source',
+    trustedHandler((_event, sourceId: string) => {
+      if (!sourceId || sourceId.length > 256) {
+        throw new Error('Invalid capture source.')
+      }
+      setSelectedCaptureSource(sourceId)
+    })
+  )
 
   ipcMain.handle(
     'care:configure-meet-tab-capture',
-    (
-      _event,
-      options: {
-        includeAudio?: boolean
-      }
-    ) => {
+    trustedHandler((_event, options: { includeAudio?: boolean }) => {
       configureMeetTabCapture(options)
-    }
+    })
   )
 
-  ipcMain.handle('care:open-meet', (_event, url: string) => {
-    if (!mainWindow) return getMeetStatus()
-    openMeetUrl(mainWindow, url)
-    return getMeetStatus()
-  })
+  ipcMain.handle(
+    'care:open-meet',
+    trustedHandler((_event, url: string) => {
+      const mainWindow = getMainWindow()
+      if (!mainWindow) return getMeetStatus()
+      openMeetUrl(mainWindow, url)
+      return getMeetStatus()
+    })
+  )
 
-  ipcMain.handle('care:open-meet-browser', (_event, url: string) => {
-    openMeetInBrowser(url)
-  })
+  ipcMain.handle(
+    'care:open-meet-browser',
+    trustedHandler((_event, url: string) => {
+      openMeetInBrowser(url)
+    })
+  )
 
-  ipcMain.handle('care:get-meet-status', () => getMeetStatus())
+  ipcMain.handle('care:get-meet-status', trustedHandler(() => getMeetStatus()))
+  ipcMain.handle('care:get-meet-caption-status', trustedHandler(() => getMeetCaptionStatus()))
+  ipcMain.handle('care:get-sidebar-expanded', trustedHandler(() => isSidebarExpanded()))
 
-  ipcMain.handle('care:get-meet-caption-status', () => getMeetCaptionStatus())
-
-  ipcMain.handle('care:get-sidebar-expanded', () => isSidebarExpanded())
-
-  ipcMain.handle('care:set-sidebar-expanded', (_event, expanded: boolean) => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
+  ipcMain.handle(
+    'care:set-sidebar-expanded',
+    trustedHandler((_event, expanded: boolean) => {
+      const mainWindow = getMainWindow()
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        return isSidebarExpanded()
+      }
+      applySidebarLayout(mainWindow, expanded)
+      notifySidebarChanged(expanded)
       return isSidebarExpanded()
-    }
-    applySidebarLayout(mainWindow, expanded)
-    notifySidebarChanged(expanded)
-    return isSidebarExpanded()
-  })
+    })
+  )
 
-  ipcMain.handle('care:toggle-sidebar', () => {
-    toggleSidebar()
-    return isSidebarExpanded()
-  })
+  ipcMain.handle(
+    'care:toggle-sidebar',
+    trustedHandler(() => {
+      toggleSidebar()
+      return isSidebarExpanded()
+    })
+  )
 
-  ipcMain.handle('care:start-google-auth', () => startGoogleAuth(loadConfig(), mainWindow))
-  ipcMain.handle('care:get-auth-status', () => getAuthStatus(loadConfig()))
+  ipcMain.handle(
+    'care:start-google-auth',
+    trustedHandler(() => startGoogleAuth(loadConfig(), getMainWindow()))
+  )
 
-  ipcMain.handle('care:get-drive-destination', () => loadDriveDestination())
+  ipcMain.handle('care:get-auth-status', trustedHandler(() => getAuthStatus(loadConfig())))
+  ipcMain.handle('care:get-drive-destination', trustedHandler(() => loadDriveDestination()))
 
-  ipcMain.handle('care:set-drive-destination', (_event, destination) => {
-    saveDriveDestination(destination)
-    return loadDriveDestination()
-  })
+  ipcMain.handle(
+    'care:set-drive-destination',
+    trustedHandler(async (_event, destination) => {
+      saveDriveDestination(destination)
+      const config = loadConfig()
+      if (destination.folderId) {
+        try {
+          await establishFolderAccess(config, destination.folderId)
+        } catch (error) {
+          log.warn('drive', 'Could not establish folder access marker', error)
+        }
+      }
+      return loadDriveDestination()
+    })
+  )
 
-  ipcMain.handle('care:clear-drive-destination', () => {
-    clearDriveDestination()
-  })
+  ipcMain.handle('care:clear-drive-destination', trustedHandler(() => clearDriveDestination()))
 
-  ipcMain.handle('care:list-drive-roots', async () => {
-    try {
-      return await listDriveRoots(loadConfig())
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw new Error(`Could not load Google Drive locations: ${message}`)
-    }
-  })
+  ipcMain.handle(
+    'care:pick-drive-folder',
+    trustedHandler(async () => {
+      try {
+        return await pickDriveFolder(loadConfig(), getMainWindow())
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(message)
+      }
+    })
+  )
 
-  ipcMain.handle('care:list-drive-folders', async (_event, parentId: string, driveId?: string) => {
-    try {
-      return await listDriveFolders(loadConfig(), parentId, driveId)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw new Error(`Could not load folders: ${message}`)
-    }
-  })
+  ipcMain.handle(
+    'care:get-calendar-meetings',
+    trustedHandler(async () => {
+      try {
+        return await listCalendarMeetings(loadConfig())
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(`Could not load your calendar: ${message}`)
+      }
+    })
+  )
 
-  ipcMain.handle('care:get-calendar-meetings', async () => {
-    try {
-      return await listCalendarMeetings(loadConfig())
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw new Error(`Could not load your calendar: ${message}`)
-    }
-  })
-
-  ipcMain.handle('care:get-current-meeting', async () => {
-    try {
-      return await getCurrentOrNextMeeting(loadConfig())
-    } catch {
-      return null
-    }
-  })
+  ipcMain.handle(
+    'care:get-current-meeting',
+    trustedHandler(async () => {
+      try {
+        return await getCurrentOrNextMeeting(loadConfig())
+      } catch {
+        return null
+      }
+    })
+  )
 
   ipcMain.handle(
     'care:begin-recording-session',
-    (_event, payload: { title: string; startedAt: string; mode?: SessionMode }) => {
+    trustedHandler((_event, payload: { title: string; startedAt: string; mode?: SessionMode }) => {
       const config = loadConfig()
       const folderName = resolveSessionFolderName(
         payload.title,
@@ -261,6 +332,7 @@ export function registerIpcHandlers(): void {
         getRecordingsRoot(config)
       )
 
+      registerSession(folderName)
       resetMeetCallMonitor()
       markMeetCallActive()
 
@@ -269,41 +341,30 @@ export function registerIpcHandlers(): void {
         ? beginNotesSession(folderName, config)
         : beginSession(folderName, config)
 
-      if (notesOnly || getCaptureMode() === 'meet-tab') {
-        void startMeetCaptionCapture(folderName, folderPath)
-      }
+      void startMeetCaptionCapture(folderName, folderPath)
 
       return { folderName, folderPath }
-    }
+    })
   )
 
-  ipcMain.handle('care:set-recording-active', (_event, active: boolean) => {
-    setRecordingActive(Boolean(active))
-  })
+  ipcMain.handle(
+    'care:set-recording-active',
+    trustedHandler((_event, active: boolean) => {
+      setRecordingActive(Boolean(active))
+    })
+  )
 
   ipcMain.handle(
     'care:save-recording-chunk',
-    async (_event, sessionId: string, chunk: ArrayBuffer | Buffer, isFinal: boolean) => {
+    trustedHandler(async (_event, sessionId: string, chunk: ArrayBuffer | Buffer, isFinal: boolean) => {
       const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
       await appendChunk(sessionId, data, isFinal)
-    }
+    })
   )
 
   ipcMain.handle(
     'care:start-processing',
-    async (
-      _event,
-      payload: {
-        sessionId: string
-        title: string
-        startedAt: string
-        mode?: SessionMode
-        hostEmail?: string
-        calendarEventId?: string
-        hangoutLink?: string
-        meetingCode?: string
-      }
-    ) => {
+    trustedHandler(async (_event, payload) => {
       resetMeetCallMonitor()
       setRecordingActive(false)
       return processRecording(payload, (message) => {
@@ -311,14 +372,47 @@ export function registerIpcHandlers(): void {
           callback(message)
         }
       })
-    }
+    })
   )
 
-  ipcMain.on('care:open-recordings-folder', () => {
+  ipcMain.handle(
+    'care:choose-recordings-dir',
+    trustedHandler(async () => {
+      if (isRecordingsDirectoryLocked()) {
+        throw new Error('Your recordings folder is set by IT and cannot be changed in the app.')
+      }
+
+      const config = loadConfig()
+      const mainWindow = getMainWindow()
+      const dialogOptions: OpenDialogOptions = {
+        title: 'Choose local recordings folder',
+        defaultPath: config.recordingsDir,
+        properties: ['openDirectory', 'createDirectory']
+      }
+
+      const result =
+        mainWindow && !mainWindow.isDestroyed()
+          ? await dialog.showOpenDialog(mainWindow, dialogOptions)
+          : await dialog.showOpenDialog(dialogOptions)
+
+      if (result.canceled || !result.filePaths[0]) {
+        return null
+      }
+
+      const chosen = result.filePaths[0]
+      mkdirSync(chosen, { recursive: true })
+      saveRecordingsDirectory(chosen)
+      return chosen
+    })
+  )
+
+  ipcMain.on('care:open-recordings-folder', (event) => {
+    assertTrustedRenderer(event)
     shell.openPath(loadConfig().recordingsDir)
   })
 
   ipcMain.on('care:subscribe-progress', (event) => {
+    assertTrustedRenderer(event)
     const sender = event.sender
     const listener = (message: string) => {
       if (!sender.isDestroyed()) {
@@ -326,13 +420,13 @@ export function registerIpcHandlers(): void {
       }
     }
     progressCallbacks.add(listener)
-
     sender.once('destroyed', () => {
       progressCallbacks.delete(listener)
     })
   })
 
   ipcMain.on('care:subscribe-meet-events', (event) => {
+    assertTrustedRenderer(event)
     const sender = event.sender
     const listener = (payload: MeetCallEndedEvent) => {
       if (!sender.isDestroyed()) {
@@ -340,13 +434,13 @@ export function registerIpcHandlers(): void {
       }
     }
     meetEndedCallbacks.add(listener)
-
     sender.once('destroyed', () => {
       meetEndedCallbacks.delete(listener)
     })
   })
 
   ipcMain.on('care:subscribe-sidebar', (event) => {
+    assertTrustedRenderer(event)
     const sender = event.sender
     const listener = (expanded: boolean) => {
       if (!sender.isDestroyed()) {
@@ -354,7 +448,6 @@ export function registerIpcHandlers(): void {
       }
     }
     sidebarCallbacks.add(listener)
-
     sender.once('destroyed', () => {
       sidebarCallbacks.delete(listener)
     })
@@ -369,6 +462,4 @@ export function registerIpcHandlers(): void {
   })
 }
 
-export function getMainWindow(): BrowserWindow | null {
-  return mainWindow
-}
+export { getMainWindow } from './app-window'

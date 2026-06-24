@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { CareRecorderAPI, MeetCallEndedEvent } from '../shared/types'
+import type { CareRecorderAPI, MeetCallEndedEvent, AppUpdateEvent } from '../shared/types'
 
 const api: CareRecorderAPI = {
   getConfig: () => ipcRenderer.invoke('care:get-config'),
+  chooseRecordingsDir: () => ipcRenderer.invoke('care:choose-recordings-dir'),
   getCaptureSources: () => ipcRenderer.invoke('care:get-capture-sources'),
   setCaptureMode: (mode) => ipcRenderer.invoke('care:set-capture-mode', mode),
   setCaptureSource: (sourceId) => ipcRenderer.invoke('care:set-capture-source', sourceId),
@@ -17,6 +18,10 @@ const api: CareRecorderAPI = {
   toggleSidebar: () => ipcRenderer.invoke('care:toggle-sidebar'),
   prepareCapture: () => ipcRenderer.invoke('care:prepare-capture'),
   ensureMicrophoneAccess: () => ipcRenderer.invoke('care:ensure-microphone-access'),
+  getMicrophonePermissionStatus: () => ipcRenderer.invoke('care:get-microphone-permission-status'),
+  initializeMicrophone: () => ipcRenderer.invoke('care:initialize-microphone'),
+  confirmMicrophoneGranted: () => ipcRenderer.invoke('care:confirm-microphone-granted'),
+  markMicrophoneDenied: () => ipcRenderer.invoke('care:mark-microphone-denied'),
   openMicrophoneSettings: () => ipcRenderer.invoke('care:open-microphone-settings'),
   resetMicrophonePermissions: () => ipcRenderer.invoke('care:reset-microphone-permissions'),
   startGoogleAuth: () => ipcRenderer.invoke('care:start-google-auth'),
@@ -24,9 +29,7 @@ const api: CareRecorderAPI = {
   getDriveDestination: () => ipcRenderer.invoke('care:get-drive-destination'),
   setDriveDestination: (destination) => ipcRenderer.invoke('care:set-drive-destination', destination),
   clearDriveDestination: () => ipcRenderer.invoke('care:clear-drive-destination'),
-  listDriveRoots: () => ipcRenderer.invoke('care:list-drive-roots'),
-  listDriveFolders: (parentId, driveId) =>
-    ipcRenderer.invoke('care:list-drive-folders', parentId, driveId),
+  pickDriveFolder: () => ipcRenderer.invoke('care:pick-drive-folder'),
   getCalendarMeetings: () => ipcRenderer.invoke('care:get-calendar-meetings'),
   getCurrentMeeting: () => ipcRenderer.invoke('care:get-current-meeting'),
   beginRecordingSession: (payload) => ipcRenderer.invoke('care:begin-recording-session', payload),
@@ -58,6 +61,17 @@ const api: CareRecorderAPI = {
     ipcRenderer.on('care:sidebar-changed', listener)
     return () => {
       ipcRenderer.removeListener('care:sidebar-changed', listener)
+    }
+  },
+  getAppVersion: () => ipcRenderer.invoke('care:get-app-version'),
+  checkForUpdates: () => ipcRenderer.invoke('care:check-for-updates'),
+  installAppUpdate: () => ipcRenderer.invoke('care:install-app-update'),
+  onAppUpdate: (callback) => {
+    ipcRenderer.send('care:subscribe-app-update')
+    const listener = (_event: Electron.IpcRendererEvent, payload: AppUpdateEvent) => callback(payload)
+    ipcRenderer.on('care:app-update', listener)
+    return () => {
+      ipcRenderer.removeListener('care:app-update', listener)
     }
   }
 }

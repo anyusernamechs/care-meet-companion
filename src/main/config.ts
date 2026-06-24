@@ -1,4 +1,3 @@
-import { app } from 'electron'
 import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import type { AppConfig } from '../shared/types'
@@ -9,16 +8,18 @@ import {
   resolveWhisperModelPath
 } from './bundled-tools'
 import { loadDriveDestination } from './services/drive-settings'
+import { resolveRecordingsDirectory } from './services/recordings-settings'
+import { resolveSessionDir } from './paths'
 
-function resolvePath(value: string | undefined, fallback: string): string {
-  if (!value) return fallback
-  return value.replace(/^~/, app.getPath('home'))
+function resolveGoogleAppId(clientId: string): string {
+  const fromEnv = process.env.GOOGLE_APP_ID?.trim()
+  if (fromEnv) return fromEnv
+  const match = clientId.match(/^(\d+)-/)
+  return match?.[1] ?? ''
 }
 
 export function loadConfig(): AppConfig {
-  const defaultRecordingsDir = join(app.getPath('documents'), 'CARE Meet Recordings')
-
-  const recordingsDir = resolvePath(process.env.CARE_RECORDINGS_DIR, defaultRecordingsDir)
+  const recordingsDir = resolveRecordingsDirectory()
   if (!existsSync(recordingsDir)) {
     mkdirSync(recordingsDir, { recursive: true })
   }
@@ -36,25 +37,23 @@ export function loadConfig(): AppConfig {
     googleClientId: process.env.GOOGLE_CLIENT_ID || '',
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
     googleRedirectUri: process.env.GOOGLE_REDIRECT_URI || 'http://127.0.0.1:42813/oauth2callback',
+    googleApiKey: process.env.GOOGLE_API_KEY || process.env.FIREBASE_API_KEY || '',
+    googleAppId: resolveGoogleAppId(process.env.GOOGLE_CLIENT_ID || ''),
     driveFolderId: savedDrive?.folderId || process.env.GOOGLE_DRIVE_FOLDER_ID || '',
     driveFolderLabel: savedDrive?.pathLabel || '',
     driveId: savedDrive?.driveId,
-    googleChatWebhookUrl: process.env.GOOGLE_CHAT_WEBHOOK_URL || undefined,
     firebaseApiKey: process.env.FIREBASE_API_KEY || '',
     firebaseProjectId: process.env.FIREBASE_PROJECT_ID || '',
-    firebaseAppId: process.env.FIREBASE_APP_ID || '',
-    notifyEmail: process.env.CARE_NOTIFY_EMAIL || '',
-    smtpHost: process.env.SMTP_HOST || '',
-    smtpPort: Number(process.env.SMTP_PORT || 587),
-    smtpUser: process.env.SMTP_USER || '',
-    smtpPass: process.env.SMTP_PASS || ''
+    firebaseAppId: process.env.FIREBASE_APP_ID || ''
   }
 }
 
 export function getSessionDir(config: AppConfig, sessionId: string): string {
-  const base = config.synologyPath && existsSync(config.synologyPath)
-    ? join(config.synologyPath, sessionId)
-    : join(config.recordingsDir, sessionId)
+  const recordingsRoot =
+    config.synologyPath && existsSync(config.synologyPath)
+      ? config.synologyPath
+      : config.recordingsDir
+  const base = resolveSessionDir(recordingsRoot, sessionId)
 
   if (!existsSync(base)) {
     mkdirSync(base, { recursive: true })

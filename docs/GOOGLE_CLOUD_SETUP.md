@@ -21,7 +21,7 @@ A GCP project was created under the **carehelps.ca** org:
 | --- | --- |
 | Project ID | `care-meet-recorder` |
 | Project name | CARE Meet Recorder |
-| Enabled APIs | Drive, Calendar, Chat |
+| Enabled APIs | Drive, Calendar, Chat, **Google Picker** |
 
 Verify:
 
@@ -44,6 +44,8 @@ gcloud services list --enabled --project=care-meet-recorder
    - `.../auth/userinfo.email`
    - `.../auth/calendar.readonly`
    - `.../auth/drive.file`
+   - `.../auth/drive.readonly` (folder picker browsing)
+   - `.../auth/drive.metadata.readonly`
 7. Save
 
 For a **Google for Nonprofits** Workspace, Internal publishing keeps the app available to all `@carehelps.ca` users without public verification.
@@ -64,6 +66,24 @@ Add authorized redirect URI (Desktop clients usually allow loopback automaticall
 ```text
 http://127.0.0.1:42813/oauth2callback
 ```
+
+---
+
+## Step 2b — Drive folder picker (API key)
+
+The in-app **Browse Drive** button uses Google's official Picker UI (search, shared drives, breadcrumbs).
+
+1. [Enable Google Picker API](https://console.cloud.google.com/apis/library/picker.googleapis.com?project=care-meet-recorder)
+2. [Credentials → Create credentials → API key](https://console.cloud.google.com/apis/credentials?project=care-meet-recorder)
+3. Restrict the key to **Google Picker API** (recommended)
+4. Under **Application restrictions**, choose **None** (desktop Electron app). Do not use HTTP referrer restrictions — they block the picker in this app.
+5. Add to `.env`:
+
+```env
+GOOGLE_API_KEY=your_api_key_here
+```
+
+`FIREBASE_API_KEY` from the same project also works if you already have one configured.
 
 ---
 

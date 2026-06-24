@@ -1,9 +1,8 @@
 import type {
+  AppUpdateEvent,
   CalendarMeeting,
   CaptureMode,
   CaptureSource,
-  DriveFolderEntry,
-  DriveRootEntry,
   SessionMode
 } from '../shared/types'
 
@@ -34,6 +33,10 @@ const authStatus = document.getElementById('auth-status') as HTMLParagraphElemen
 const authButton = document.getElementById('auth-button') as HTMLButtonElement
 const openFolderButton = document.getElementById('open-folder-button') as HTMLButtonElement
 const recordingsPath = document.getElementById('recordings-path') as HTMLParagraphElement
+const recordingsPathHint = document.getElementById('recordings-path-hint') as HTMLParagraphElement
+const changeRecordingsDirButton = document.getElementById(
+  'change-recordings-dir-button'
+) as HTMLButtonElement
 const calendarStatus = document.getElementById('calendar-status') as HTMLParagraphElement
 const calendarMeetingSelect = document.getElementById('calendar-meeting-select') as HTMLSelectElement
 const refreshCalendarButton = document.getElementById('refresh-calendar-button') as HTMLButtonElement
@@ -49,18 +52,19 @@ const driveFolderLabel = document.getElementById('drive-folder-label') as HTMLPa
 const driveDestinationHint = document.getElementById('drive-destination-hint') as HTMLParagraphElement
 const chooseDriveFolderButton = document.getElementById('choose-drive-folder-button') as HTMLButtonElement
 const clearDriveFolderButton = document.getElementById('clear-drive-folder-button') as HTMLButtonElement
-const driveBrowser = document.getElementById('drive-browser') as HTMLElement
-const driveRootSelect = document.getElementById('drive-root-select') as HTMLSelectElement
-const driveBreadcrumb = document.getElementById('drive-breadcrumb') as HTMLParagraphElement
-const driveFolderList = document.getElementById('drive-folder-list') as HTMLUListElement
-const driveSelectHereButton = document.getElementById('drive-select-here-button') as HTMLButtonElement
-const driveBrowserCancelButton = document.getElementById('drive-browser-cancel-button') as HTMLButtonElement
 const recordSourceOptions = document.getElementById('record-source-options') as HTMLElement
 const notesOnlyHint = document.getElementById('notes-only-hint') as HTMLElement
 const captionReminder = document.getElementById('caption-reminder') as HTMLElement
+const captionHealth = document.getElementById('caption-health') as HTMLParagraphElement
 const recordingNoticeCheckbox = document.getElementById('recording-notice-checkbox') as HTMLInputElement
 const afterPromiseList = document.getElementById('after-promise-list') as HTMLUListElement
 const appStatusBarText = document.getElementById('app-status-bar-text') as HTMLParagraphElement
+const appUpdateBar = document.getElementById('app-update-bar') as HTMLElement
+const appUpdateText = document.getElementById('app-update-text') as HTMLParagraphElement
+const appUpdateAction = document.getElementById('app-update-action') as HTMLButtonElement
+const meetingFoldSummary = document.getElementById('meeting-fold-summary') as HTMLSpanElement
+const settingsFoldSummary = document.getElementById('settings-fold-summary') as HTMLSpanElement
+const settingsDetails = document.getElementById('settings-details') as HTMLDetailsElement
 const focusModeButton = document.getElementById('focus-mode-button') as HTMLButtonElement
 const expandPanelButton = document.getElementById('expand-panel-button') as HTMLButtonElement
 const sessionModeInputs = document.querySelectorAll(
@@ -69,9 +73,8 @@ const sessionModeInputs = document.querySelectorAll(
 
 let transcriptionReady = false
 let driveFolderSelected = false
-
-let driveRoots: DriveRootEntry[] = []
-let driveFolderPath: DriveFolderEntry[] = []
+let recordingsDirLocked = false
+let appVersion = ''
 
 let sources: CaptureSource[] = []
 let calendarMeetings: CalendarMeeting[] = []
@@ -94,6 +97,7 @@ let sidebarUnsubscribe: (() => void) | null = null
 let chunkWriteChain = Promise.resolve()
 let sessionEnding = false
 let recordingBytesReceived = 0
+let captionHealthTimerId: number | null = null
 
 const RECORDER_SLICE_MS = 2000
 
@@ -181,46 +185,99 @@ function updateReadyStatus(text: string): void {
 function updateAfterPromise(): void {
   const notesOnly = getSessionMode() === 'notes-only'
   const items = notesOnly
-    ? ['Save transcript with names', 'Upload to Drive', 'Notify host']
-    : ['Save MP4', 'Create transcript', 'Upload to Drive', 'Notify host']
+    ? ['Save transcript with names', 'Upload to Google Drive']
+    : ['Save MP4', 'Create transcript', 'Upload to Google Drive']
 
   if (!driveFolderSelected) {
     const uploadIndex = items.findIndex((item) => item.startsWith('Upload'))
     if (uploadIndex >= 0) {
-      items[uploadIndex] = 'Keep local copy (no Drive folder selected)'
+      items[uploadIndex] = 'Keep local copy (no Google Drive folder selected)'
     }
   }
 
   afterPromiseList.innerHTML = items.map((item) => `<li>${item}</li>`).join('')
 }
 
+function updateFoldSummaries(): void {
+  const meetingTitle =
+    selectedCalendarMeeting?.title || meetingTitleInput.value.trim() || 'Join or pick from calendar'
+  meetingFoldSummary.textContent = meetingTitle
+
+  const settingsParts: string[] = []
+  if (hostEmail) {
+    const shortEmail = hostEmail.split('@')[0] || hostEmail
+    settingsParts.push(shortEmail)
+  } else {
+    settingsParts.push('Sign in')
+  }
+  if (driveFolderSelected) {
+    settingsParts.push('Drive ready')
+  }
+  settingsFoldSummary.textContent = settingsParts.join(' · ')
+}
+
+function updateSettingsFoldState(): void {
+  if (settingsDetails && !hostEmail) {
+    settingsDetails.open = true
+  }
+}
+
 async function updateAppStatusBar(): Promise<void> {
-  const parts: string[] = ['Local storage ready']
   const warnings: string[] = []
 
-  if (hostEmail) {
-    parts.push('Google connected')
-  } else {
-    warnings.push('Google not connected')
+  if (!hostEmail) {
+    warnings.push('Sign in to Google')
+  } else if (!driveFolderSelected) {
+    warnings.push('Choose a Drive folder')
   }
 
-  if (driveFolderSelected) {
-    parts.push('Drive folder set')
-  } else if (hostEmail) {
-    warnings.push('Drive folder not selected')
-  }
-
-  if (transcriptionReady) {
-    parts.push('Recorder ready')
-  } else {
+  if (!transcriptionReady) {
     warnings.push('Transcript tools unavailable')
   }
 
-  const text = warnings.length
-    ? `${parts.join(' • ')} • <span class="warn">${warnings.join(' • ')}</span>`
-    : parts.join(' • ')
+  if (warnings.length) {
+    appStatusBarText.textContent = warnings.join(' · ')
+    appStatusBarText.classList.add('warn')
+  } else {
+    appStatusBarText.textContent = appVersion ? `Ready to record · v${appVersion}` : 'Ready to record'
+    appStatusBarText.classList.remove('warn')
+  }
+}
 
-  appStatusBarText.innerHTML = text
+function showAppUpdate(event: AppUpdateEvent): void {
+  if (event.status === 'checking' || event.status === 'not-available' || event.status === 'error') {
+    if (event.status === 'error') {
+      logUpdateError(event.message)
+    }
+    return
+  }
+
+  appUpdateBar.classList.remove('hidden')
+
+  if (event.status === 'available' || event.status === 'downloading') {
+    appUpdateText.textContent =
+      event.status === 'downloading'
+        ? `Downloading update v${event.version ?? ''}…`
+        : `Update v${event.version ?? ''} available — downloading in the background`
+    appUpdateAction.classList.add('hidden')
+    return
+  }
+
+  if (event.status === 'downloaded') {
+    appUpdateText.textContent = `Update v${event.version ?? ''} is ready`
+    appUpdateAction.classList.remove('hidden')
+  }
+}
+
+function logUpdateError(message?: string): void {
+  if (!message) return
+  console.warn('[care:update]', message)
+}
+
+function subscribeAppUpdates(): void {
+  window.careRecorder.onAppUpdate((event) => {
+    showAppUpdate(event)
+  })
 }
 
 function setUiState(state: UIState): void {
@@ -235,14 +292,13 @@ function setUiState(state: UIState): void {
   stopButton.classList.toggle('hidden', !recording)
   stopButton.disabled = !recording
 
-  sessionReady.classList.toggle('hidden', !idle)
+  sessionReady.classList.add('hidden')
   sessionActive.classList.toggle('hidden', !recording)
   sessionProcessing.classList.toggle('hidden', !processing)
 
   completeCard.classList.toggle('hidden', !complete)
 
   if (idle) {
-    updateReadyStatus(getSessionMode() === 'notes-only' ? 'Ready to take notes' : 'Ready to record')
     updateCaptureStatuses('idle')
   }
 
@@ -260,6 +316,7 @@ function setUiState(state: UIState): void {
   copyMeetLinkButton.disabled = !idle
   authButton.disabled = state === 'recording' || state === 'processing'
   chooseDriveFolderButton.disabled = !hostEmail || state !== 'idle'
+  changeRecordingsDirButton.disabled = recordingsDirLocked || state !== 'idle'
   recordingNoticeCheckbox.disabled = !idle
   for (const input of sessionModeInputs) {
     input.disabled = !idle
@@ -394,6 +451,7 @@ function applyCalendarMeeting(meeting: CalendarMeeting | null): void {
     heroMeetingTime.textContent = hostEmail ? 'No upcoming Meet on your calendar' : 'Sign in to load calendar'
     heroMeetingLink.textContent = getMeetLinkDisplay()
     copyMeetLinkButton.disabled = uiState !== 'idle'
+    updateFoldSummaries()
     return
   }
 
@@ -407,6 +465,7 @@ function applyCalendarMeeting(meeting: CalendarMeeting | null): void {
       ? `meet.google.com/${meeting.meetingCode}`
       : 'meet.google.com'
   copyMeetLinkButton.disabled = uiState !== 'idle'
+  updateFoldSummaries()
 }
 
 function renderCalendarMeetings(): void {
@@ -466,7 +525,10 @@ async function loadCalendarMeetings(): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     calendarStatus.textContent = message
-    calendarMeetingSelect.innerHTML = `<option value="">${message}</option>`
+    const option = document.createElement('option')
+    option.value = ''
+    option.textContent = message
+    calendarMeetingSelect.replaceChildren(option)
     applyCalendarMeeting(null)
   }
 }
@@ -506,133 +568,44 @@ async function refreshDriveDestination(): Promise<void> {
 
   if (destination?.pathLabel) {
     driveFolderLabel.textContent = destination.pathLabel
-    driveDestinationHint.textContent = 'New recordings upload here after processing.'
-    chooseDriveFolderButton.textContent = 'Change folder'
+    driveDestinationHint.textContent = 'Each session gets its own subfolder here.'
+    chooseDriveFolderButton.textContent = 'Change'
     clearDriveFolderButton.classList.remove('hidden')
   } else {
     driveFolderLabel.textContent = 'Not selected'
-    driveDestinationHint.textContent =
-      'Recordings save locally first. Choose a Drive folder for automatic upload.'
-    chooseDriveFolderButton.textContent = 'Choose Drive folder'
+    driveDestinationHint.textContent = 'Optional — uploads after each session.'
+    chooseDriveFolderButton.textContent = 'Browse Google Drive…'
     clearDriveFolderButton.classList.add('hidden')
   }
 
   updateAfterPromise()
+  updateFoldSummaries()
   void updateAppStatusBar()
 }
 
-function currentDriveRoot(): DriveRootEntry | undefined {
-  const selectedId = driveRootSelect.value
-  return driveRoots.find((root) => root.id === selectedId)
+async function refreshRecordingsPath(dir?: string): Promise<void> {
+  const path = dir ?? (await window.careRecorder.getConfig()).recordingsDir
+  recordingsPath.textContent = path
+  recordingsPathHint.textContent = recordingsDirLocked
+    ? 'Set by your IT team.'
+    : 'Saved to your Videos folder by default.'
+  changeRecordingsDirButton.disabled = recordingsDirLocked || uiState !== 'idle'
 }
 
-function currentDriveParentId(): string {
-  const root = currentDriveRoot()
-  if (!root) return 'root'
-  if (driveFolderPath.length > 0) {
-    return driveFolderPath[driveFolderPath.length - 1].id
-  }
-  return root.driveId || root.id
-}
-
-function renderDriveBreadcrumb(): void {
-  const root = currentDriveRoot()
-  if (!root) {
-    driveBreadcrumb.textContent = ''
-    return
-  }
-
-  const parts = [root.name, ...driveFolderPath.map((folder) => folder.name)]
-  driveBreadcrumb.textContent = parts.join(' / ')
-}
-
-async function loadDriveFolderList(): Promise<void> {
-  const root = currentDriveRoot()
-  if (!root) return
-
-  driveFolderList.innerHTML = ''
-  try {
-    const folders = await window.careRecorder.listDriveFolders(
-      currentDriveParentId(),
-      root.driveId
-    )
-
-    if (folders.length === 0) {
-      const item = document.createElement('li')
-      item.textContent = 'No subfolders here'
-      driveFolderList.appendChild(item)
-      return
-    }
-
-    for (const folder of folders) {
-      const item = document.createElement('li')
-      const button = document.createElement('button')
-      button.type = 'button'
-      button.textContent = folder.name
-      button.addEventListener('click', () => {
-        driveFolderPath.push(folder)
-        void loadDriveFolderList()
-        renderDriveBreadcrumb()
-      })
-      item.appendChild(button)
-      driveFolderList.appendChild(item)
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    const item = document.createElement('li')
-    item.textContent = message
-    driveFolderList.appendChild(item)
-  }
-
-  renderDriveBreadcrumb()
-}
-
-async function openDriveBrowser(): Promise<void> {
-  driveBrowser.classList.remove('hidden')
+async function openDriveFolderPicker(): Promise<void> {
   chooseDriveFolderButton.disabled = true
-  driveFolderPath = []
-
   try {
-    driveRoots = await window.careRecorder.listDriveRoots()
-    driveRootSelect.innerHTML = ''
-    for (const root of driveRoots) {
-      const option = document.createElement('option')
-      option.value = root.id
-      option.textContent = root.name
-      driveRootSelect.appendChild(option)
-    }
-    await loadDriveFolderList()
+    const picked = await window.careRecorder.pickDriveFolder()
+    if (!picked) return
+
+    await window.careRecorder.setDriveDestination(picked)
+    await refreshDriveDestination()
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     window.alert(message)
-    driveBrowser.classList.add('hidden')
-    chooseDriveFolderButton.disabled = !hostEmail
+  } finally {
+    chooseDriveFolderButton.disabled = !hostEmail || uiState !== 'idle'
   }
-}
-
-function closeDriveBrowser(): void {
-  driveBrowser.classList.add('hidden')
-  chooseDriveFolderButton.disabled = !hostEmail || uiState !== 'idle'
-}
-
-async function saveDriveSelection(): Promise<void> {
-  const root = currentDriveRoot()
-  if (!root) return
-
-  const folder = driveFolderPath[driveFolderPath.length - 1]
-  const folderId = folder?.id || currentDriveParentId()
-  const folderName = folder?.name || root.name
-  const pathParts = [root.name, ...driveFolderPath.map((entry) => entry.name)]
-
-  await window.careRecorder.setDriveDestination({
-    folderId,
-    folderName,
-    driveId: root.driveId,
-    pathLabel: pathParts.join(' / ')
-  })
-
-  closeDriveBrowser()
-  await refreshDriveDestination()
 }
 
 async function refreshAuthStatus(): Promise<void> {
@@ -652,12 +625,13 @@ async function refreshAuthStatus(): Promise<void> {
     renderCalendarMeetings()
     driveFolderSelected = false
     driveFolderLabel.textContent = 'Not selected'
-    driveDestinationHint.textContent =
-      'Recordings save locally first. Choose a Drive folder for automatic upload.'
-    chooseDriveFolderButton.textContent = 'Choose Drive folder'
+    driveDestinationHint.textContent = 'Optional — uploads after each session.'
+    chooseDriveFolderButton.textContent = 'Browse Google Drive…'
     clearDriveFolderButton.classList.add('hidden')
   }
 
+  updateFoldSummaries()
+  updateSettingsFoldState()
   void updateAppStatusBar()
 }
 
@@ -684,6 +658,58 @@ function formatElapsed(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
+function stopCaptionHealthMonitor(): void {
+  if (captionHealthTimerId !== null) {
+    window.clearInterval(captionHealthTimerId)
+    captionHealthTimerId = null
+  }
+  captionHealth.classList.add('hidden')
+  captionHealth.textContent = ''
+  captionHealth.classList.remove('ok', 'warn')
+}
+
+async function updateCaptionHealth(): Promise<void> {
+  const status = await window.careRecorder.getMeetCaptionStatus()
+  captionHealth.classList.remove('hidden', 'ok', 'warn')
+
+  if (!status.on && !status.regionFound) {
+    captionHealth.textContent =
+      'Captions off — click CC in Meet (bottom bar) and enable speaker names in caption settings.'
+    captionHealth.classList.add('warn')
+    return
+  }
+
+  if (!status.regionFound) {
+    captionHealth.textContent =
+      'CC may be on — open the captions panel in Meet (bottom bar) so the app can read them.'
+    captionHealth.classList.add('warn')
+    return
+  }
+
+  if (status.linesCaptured === 0 && status.visibleRows === 0) {
+    captionHealth.textContent = 'Waiting for captions — turn on CC in Meet and speak to test.'
+    captionHealth.classList.add('warn')
+    return
+  }
+
+  if (!status.hasSpeakerNames) {
+    captionHealth.textContent = `${status.linesCaptured} lines — enable speaker names in Meet.`
+    captionHealth.classList.add('warn')
+    return
+  }
+
+  captionHealth.textContent = `${status.linesCaptured} lines captured with names.`
+  captionHealth.classList.add('ok')
+}
+
+function startCaptionHealthMonitor(): void {
+  stopCaptionHealthMonitor()
+  void updateCaptionHealth()
+  captionHealthTimerId = window.setInterval(() => {
+    void updateCaptionHealth()
+  }, 2000)
+}
+
 function startSessionTimer(): void {
   recordingClockStart = Date.now()
   stopSessionTimer()
@@ -698,6 +724,7 @@ function stopSessionTimer(): void {
     window.clearInterval(recordingTimerId)
     recordingTimerId = null
   }
+  stopCaptionHealthMonitor()
 }
 
 async function acquireMicStream(): Promise<MediaStream> {
@@ -717,11 +744,13 @@ async function acquireMicStream(): Promise<MediaStream> {
     })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
+    await window.careRecorder.markMicrophoneDenied()
     const retry = window.confirm(
       `Could not open your microphone (${detail}).\n\nReset the app's microphone choice and try again?`
     )
     if (retry) {
       await window.careRecorder.resetMicrophonePermissions()
+      await initializeMicrophoneOnStartup()
       return await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: false,
@@ -734,6 +763,34 @@ async function acquireMicStream(): Promise<MediaStream> {
     throw new Error(
       `Could not open your microphone (${detail}). Check Windows microphone settings for CARE Meet Companion.`
     )
+  }
+}
+
+async function initializeMicrophoneOnStartup(): Promise<void> {
+  const init = await window.careRecorder.initializeMicrophone()
+  if (init.status === 'granted') {
+    return
+  }
+
+  if (init.status === 'denied') {
+    return
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: true
+      },
+      video: false
+    })
+    for (const track of stream.getTracks()) {
+      track.stop()
+    }
+    await window.careRecorder.confirmMicrophoneGranted()
+  } catch {
+    await window.careRecorder.markMicrophoneDenied()
   }
 }
 
@@ -788,8 +845,14 @@ async function buildRecordingStreamFromDisplay(displayStream: MediaStream): Prom
 
   let audioTracks: MediaStreamTrack[] = []
   if (captureMode === 'meet-tab') {
-    // Meet tab video + microphone only. Windows loopback/tab-audio breaks MediaRecorder (0-byte files).
-    audioTracks = micAudio
+    // Meet tab frame audio carries all participants from the Meet WebRTC stream (not Windows loopback).
+    if (displayAudio.length > 0 && micAudio.length > 0) {
+      audioTracks = await mixAudioTracks(displayAudio, micAudio)
+    } else if (displayAudio.length > 0) {
+      audioTracks = displayAudio
+    } else {
+      audioTracks = micAudio
+    }
   } else if (displayAudio.length > 0 && micAudio.length > 0) {
     audioTracks = await mixAudioTracks(displayAudio, micAudio)
   } else if (displayAudio.length > 0) {
@@ -899,10 +962,44 @@ async function waitForFirstChunk(timeoutMs: number): Promise<boolean> {
 
 async function startRecorderWithVerification(): Promise<MediaStream> {
   if (captureMode === 'meet-tab') {
-    await window.careRecorder.configureMeetTabCapture({ includeAudio: false })
+    await window.careRecorder.configureMeetTabCapture({ includeAudio: true })
   }
 
-  const displayStream = await acquireDisplayCapture(captureMode !== 'meet-tab')
+  const displayStream = await acquireDisplayCapture(true)
+  const stream = await buildRecordingStreamFromDisplay(displayStream)
+  recordingStream = stream
+  attachCaptureTrackGuards(stream)
+
+  if (captureMode === 'meet-tab' && displayStream.getAudioTracks().length === 0) {
+    console.warn('Meet tab audio track missing — only microphone will be recorded')
+  }
+
+  await createMediaRecorderForStream(stream)
+
+  if (!(await waitForFirstChunk(3500))) {
+    if (captureMode === 'meet-tab') {
+      await retryMeetTabMicOnlyRecording()
+      return recordingStream!
+    }
+    throw new Error(
+      'Video capture did not start. Restart the app, allow the microphone, and keep the meeting visible on the right.'
+    )
+  }
+
+  return stream
+}
+
+async function retryMeetTabMicOnlyRecording(): Promise<void> {
+  stopMediaRecorderOnly()
+  for (const track of recordingStream?.getTracks() || []) {
+    track.stop()
+  }
+  recordingStream = null
+  recordingBytesReceived = 0
+  chunkWriteChain = Promise.resolve()
+
+  await window.careRecorder.configureMeetTabCapture({ includeAudio: false })
+  const displayStream = await acquireDisplayCapture(false)
   const stream = await buildRecordingStreamFromDisplay(displayStream)
   recordingStream = stream
   attachCaptureTrackGuards(stream)
@@ -914,7 +1011,9 @@ async function startRecorderWithVerification(): Promise<MediaStream> {
     )
   }
 
-  return stream
+  window.alert(
+    'Could not capture meeting audio from the Meet tab. This recording will include your microphone only.\n\nFor group calls, try Browser window capture mode with your speakers on, or check that Meet volume is not muted.'
+  )
 }
 
 function subscribeMeetCallEnded(): void {
@@ -946,7 +1045,7 @@ async function confirmRecordingNotice(): Promise<boolean> {
   const notesOnly = getSessionMode() === 'notes-only'
   const action = notesOnly ? 'note-taking' : 'recording'
   return window.confirm(
-    `Before ${action} starts:\n\n• Make sure everyone knows the meeting is being ${notesOnly ? 'noted' : 'recorded'}\n• Allow microphone access — your voice is recorded from the mic\n• Turn on Meet CC and enable speaker names in caption settings for names in the transcript\n\nContinue?`
+    `Before ${action} starts:\n\n• Make sure everyone knows the meeting is being ${notesOnly ? 'noted' : 'recorded'}\n• Turn on Meet CC and enable speaker names in caption settings for names in the transcript\n\nContinue?`
   )
 }
 
@@ -967,10 +1066,6 @@ async function startSession(): Promise<void> {
   sessionEnding = false
 
   try {
-    if (sessionMode === 'record') {
-      micStream = await acquireMicStream()
-    }
-
     if (sessionMode === 'notes-only' || captureMode === 'meet-tab') {
       if (!(await ensureMeetReady())) {
         cleanupStreams()
@@ -993,6 +1088,9 @@ async function startSession(): Promise<void> {
     setUiState('recording')
     subscribeMeetCallEnded()
     startSessionTimer()
+    if (sessionMode === 'notes-only' || captureMode === 'meet-tab') {
+      startCaptionHealthMonitor()
+    }
   } catch (error) {
     setUiState('idle')
     const message = error instanceof Error ? error.message : String(error)
@@ -1189,6 +1287,7 @@ meetingTitleInput.addEventListener('input', () => {
   if (!selectedCalendarMeeting) {
     heroMeetingTitle.textContent = meetingTitleInput.value.trim() || 'Name your meeting'
   }
+  updateFoldSummaries()
 })
 
 startButton.addEventListener('click', () => {
@@ -1224,8 +1323,23 @@ openFolderButton.addEventListener('click', () => {
   window.careRecorderExtras.openRecordingsFolder()
 })
 
+changeRecordingsDirButton.addEventListener('click', () => {
+  void (async () => {
+    if (recordingsDirLocked || uiState !== 'idle') return
+    try {
+      const chosen = await window.careRecorder.chooseRecordingsDir()
+      if (chosen) {
+        await refreshRecordingsPath(chosen)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      window.alert(message)
+    }
+  })()
+})
+
 chooseDriveFolderButton.addEventListener('click', () => {
-  void openDriveBrowser()
+  void openDriveFolderPicker()
 })
 
 clearDriveFolderButton.addEventListener('click', () => {
@@ -1235,31 +1349,32 @@ clearDriveFolderButton.addEventListener('click', () => {
   })()
 })
 
-driveRootSelect.addEventListener('change', () => {
-  driveFolderPath = []
-  void loadDriveFolderList()
-})
-
-driveSelectHereButton.addEventListener('click', () => {
-  void saveDriveSelection()
-})
-
-driveBrowserCancelButton.addEventListener('click', () => {
-  closeDriveBrowser()
+appUpdateAction.addEventListener('click', () => {
+  void window.careRecorder.installAppUpdate()
 })
 
 async function bootstrap(): Promise<void> {
   meetingTitleInput.value = defaultMeetingTitle()
   subscribeSidebarChanges()
+  subscribeAppUpdates()
+  appVersion = await window.careRecorder.getAppVersion()
   const sidebarExpanded = await window.careRecorder.getSidebarExpanded()
   applySidebarUi(sidebarExpanded)
+  await initializeMicrophoneOnStartup()
   const config = await window.careRecorder.getConfig()
   transcriptionReady = config.transcriptionReady
-  recordingsPath.textContent = `Saved to: ${config.recordingsDir}`
+  recordingsDirLocked = config.recordingsDirLocked
+  await refreshRecordingsPath(config.recordingsDir)
   updateAfterPromise()
   updateSessionModeUi()
   updateCaptureModeUi()
   await Promise.all([loadSources(), refreshAuthStatus(), refreshMeetStatus(), refreshDriveDestination()])
+  updateFoldSummaries()
+  updateSettingsFoldState()
+  const micStatus = await window.careRecorder.getMicrophonePermissionStatus()
+  if (micStatus.status === 'denied') {
+    updateReadyStatus('Microphone declined — reset permissions to record your voice')
+  }
   setUiState('idle')
 }
 

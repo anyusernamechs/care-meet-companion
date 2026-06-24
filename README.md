@@ -37,13 +37,15 @@ npm run package
 
 Distribute **`CARE Meet Companion Setup 0.1.0.exe`** to staff. They do not need FFmpeg, Whisper, or Node.js on their machines.
 
+**Signed builds and auto-updates:** internal rollout uses a **self-signed** cert — see [docs/CODE_SIGNING_AND_RELEASES.md](docs/CODE_SIGNING_AND_RELEASES.md). Run `scripts/create-selfsign-cert.ps1`, have IT trust the `.cer`, then push a git tag (`v0.1.1`) to publish signed installers and updates.
+
 Optional `.env` values (baked into the installer via `extraResources`):
 
 | Variable | Purpose |
 | --- | --- |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | OAuth for calendar + Drive |
 | `GOOGLE_DRIVE_FOLDER_ID` | Shared Drive folder (leave empty to save locally only) |
-| `GOOGLE_CHAT_WEBHOOK_URL` | Google Chat notifications |
+| `CARE_GITHUB_UPDATE_TOKEN` | Read-only GitHub PAT for auto-updates (private repo only) |
 | `CARE_RECORDINGS_DIR` | Override default recordings folder |
 | `CARE_WHISPER_ENABLED` | `false` to skip transcripts |
 

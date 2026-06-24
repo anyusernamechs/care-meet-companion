@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import { existsSync } from 'fs'
-import { join } from 'path'
+import { join, resolve as resolvePath } from 'path'
+import { log } from './logger'
 
 function binRoot(): string {
   if (app.isPackaged) {
@@ -38,11 +39,22 @@ function resolveToolOverride(
   if (!raw) {
     return resolveBundled()
   }
-  // Bare command names mean "auto" — prefer the installer bundle for staff machines.
   if (/^(ffmpeg|whisper|whisper-cli)$/i.test(raw)) {
     return resolveBundled()
   }
-  return raw
+
+  const resolved = resolvePath(raw)
+  if (/\\windows\\system32|\\windows\\syswow64/i.test(resolved)) {
+    log.warn('tools', 'Ignoring unsafe tool path override', resolved)
+    return resolveBundled()
+  }
+
+  if (!existsSync(resolved)) {
+    log.warn('tools', 'Tool path override does not exist, using bundled default', resolved)
+    return resolveBundled()
+  }
+
+  return resolved
 }
 
 export function resolveFfmpegPath(envOverride?: string): string {

@@ -45,7 +45,6 @@ export async function saveRecordingMetadata(
     meetingCode: session.meetingCode || null,
     driveVideoFileId: session.driveVideoFileId || null,
     driveTranscriptFileId: session.driveTranscriptFileId || null,
-    localMp4Path: session.localMp4Path || null,
     source: 'care-meet-companion-desktop',
     updatedAt: serverTimestamp()
   })

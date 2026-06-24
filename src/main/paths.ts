@@ -1,6 +1,32 @@
 import { existsSync } from 'fs'
-import { join } from 'path'
+import { join, resolve, sep } from 'path'
 import type { AppConfig } from '../shared/types'
+
+const SESSION_ID_PATTERN =
+  /^[^<>:"/\\|?*\x00-\x1f](?:[^<>:"/\\|?*\x00-\x1f]*[^<>:"/\\|?*\x00-\x1f.])?$/
+
+export function assertSafeSessionId(sessionId: string): void {
+  const trimmed = sessionId.trim()
+  if (!trimmed || trimmed.length > 180) {
+    throw new Error('Invalid session id.')
+  }
+  if (trimmed.includes('..') || trimmed.includes('/') || trimmed.includes('\\')) {
+    throw new Error('Invalid session id.')
+  }
+  if (!SESSION_ID_PATTERN.test(trimmed)) {
+    throw new Error('Invalid session id.')
+  }
+}
+
+export function resolveSessionDir(recordingsRoot: string, sessionId: string): string {
+  assertSafeSessionId(sessionId)
+  const root = resolve(recordingsRoot)
+  const sessionDir = resolve(root, sessionId)
+  if (sessionDir !== root && !sessionDir.startsWith(`${root}${sep}`)) {
+    throw new Error('Invalid session path.')
+  }
+  return sessionDir
+}
 
 export function sanitizeFileName(value: string): string {
   return (
@@ -34,5 +60,6 @@ export function resolveSessionFolderName(
     counter += 1
   }
 
+  assertSafeSessionId(candidate)
   return candidate
 }

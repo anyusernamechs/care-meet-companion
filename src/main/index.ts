@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron'
 import { bootstrapEnv } from './env'
 import { createMainWindow, registerIpcHandlers } from './ipc'
 import { registerAppPermissions } from './permissions'
+import { initAutoUpdates, registerAutoUpdateHandlers } from './auto-update'
 
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
@@ -16,7 +17,9 @@ if (!app.requestSingleInstanceLock()) {
     bootstrapEnv()
     registerAppPermissions()
     registerIpcHandlers()
+    registerAutoUpdateHandlers()
     createMainWindow()
+    initAutoUpdates()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

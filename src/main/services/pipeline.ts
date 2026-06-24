@@ -1,6 +1,7 @@
 import { createWriteStream, existsSync, mkdirSync, rmSync, statSync, unlinkSync, writeFileSync, type WriteStream } from 'fs'
 import { join } from 'path'
 import { getSessionDir, loadConfig } from '../config'
+import { assertRegisteredSession, unregisterSession } from '../session-registry'
 import { getRecordingsRoot, sanitizeFileName } from '../paths'
 import {
   convertWebmToMp4,
@@ -16,9 +17,8 @@ import {
   loadMeetCaptions,
   stopMeetCaptionCapture
 } from '../meet-captions'
-import { uploadFileToDrive } from './drive'
+import { ensureDriveSessionFolder, uploadFileToDrive } from './drive'
 import { saveRecordingMetadata } from './firestore'
-import { notifyHost } from './notify'
 import type { ProcessingResult, RecordingSession, StartProcessingPayload } from '../../shared/types'
 
 interface OpenSession {
@@ -67,17 +67,10 @@ function ensureOpenSession(folderName: string, chunk: Buffer, isFinal: boolean):
 
   let session = openSessions.get(folderName)
   if (!session) {
-    if (isFinal && chunk.length === 0) {
-      return null
-    }
-    if (chunk.length === 0) {
-      return null
-    }
-    beginSession(folderName)
-    session = openSessions.get(folderName)
+    return null
   }
 
-  return session || null
+  return session
 }
 
 export async function appendChunk(
@@ -85,6 +78,7 @@ export async function appendChunk(
   chunk: Buffer,
   isFinal: boolean
 ): Promise<void> {
+  assertRegisteredSession(folderName)
   const session = ensureOpenSession(folderName, chunk, isFinal)
   if (!session) {
     return
@@ -150,8 +144,8 @@ function validateRecordingFile(webmPath: string): void {
   }
 }
 
-function cleanupTempFiles(paths: { webm: string; wav: string; captions?: string }): void {
-  for (const file of [paths.webm, paths.wav, paths.captions]) {
+function cleanupTempMedia(paths: { webm: string; wav: string }): void {
+  for (const file of [paths.webm, paths.wav]) {
     if (!file || !existsSync(file)) continue
     try {
       unlinkSync(file)
@@ -174,6 +168,8 @@ export async function processRecording(
   payload: StartProcessingPayload,
   onProgress: (message: string) => void
 ): Promise<ProcessingResult> {
+  assertRegisteredSession(payload.sessionId)
+
   if (payload.mode === 'notes-only') {
     return processNotesSession(payload, onProgress)
   }
@@ -236,21 +232,24 @@ export async function processRecording(
         'utf8'
       )
     }
-    cleanupTempFiles({
+    cleanupTempMedia({
       webm: paths.webm,
-      wav: paths.wav,
-      captions: join(sessionDir, 'meet-captions.json')
+      wav: paths.wav
     })
 
     session.status = 'uploading'
 
     if (config.driveFolderId) {
+      onProgress('Creating Google Drive folder...')
+      const driveSessionFolderId = await ensureDriveSessionFolder(config, payload.sessionId)
+
       onProgress('Uploading to Google Drive...')
       session.driveVideoFileId = await uploadFileToDrive(
         config,
         paths.mp4,
         `${sanitizeFileName(payload.title)}.mp4`,
-        'video/mp4'
+        'video/mp4',
+        driveSessionFolderId
       )
 
       onProgress('Uploading transcript...')
@@ -258,7 +257,8 @@ export async function processRecording(
         config,
         paths.transcript,
         `${sanitizeFileName(payload.title)}.txt`,
-        'text/plain'
+        'text/plain',
+        driveSessionFolderId
       )
 
       removeLocalSessionFolder(sessionDir)
@@ -266,23 +266,23 @@ export async function processRecording(
 
     session.status = 'complete'
     await saveRecordingMetadata(config, session)
-    await notifyHost(config, session)
 
     const message = config.driveFolderId
-      ? `Uploaded to Google Drive${config.driveFolderLabel ? `\n${config.driveFolderLabel}` : ''}.\nThe local copy was removed.`
+      ? `Uploaded to Google Drive folder "${payload.sessionId}"${config.driveFolderLabel ? `\nInside: ${config.driveFolderLabel}` : ''}.\nThe local copy was removed.`
       : `Saved on this computer.\n\n${sessionDir}`
 
     onProgress('All done!')
+    unregisterSession(payload.sessionId)
     return {
       session,
       message
     }
   } catch (error) {
-    cleanupTempFiles({
+    cleanupTempMedia({
       webm: paths.webm,
-      wav: paths.wav,
-      captions: join(sessionDir, 'meet-captions.json')
+      wav: paths.wav
     })
+    unregisterSession(payload.sessionId)
     session.status = 'error'
     session.error = error instanceof Error ? error.message : String(error)
     await saveRecordingMetadata(config, session)
@@ -324,21 +324,24 @@ async function processNotesSession(
     onProgress('Saving transcript with participant names...')
     writeFileSync(paths.transcript, formatMeetCaptionTranscript(captionLines), 'utf8')
 
-    cleanupTempFiles({
+    cleanupTempMedia({
       webm: paths.webm,
-      wav: paths.wav,
-      captions: join(sessionDir, 'meet-captions.json')
+      wav: paths.wav
     })
 
     session.status = 'uploading'
 
     if (config.driveFolderId) {
+      onProgress('Creating Google Drive folder...')
+      const driveSessionFolderId = await ensureDriveSessionFolder(config, payload.sessionId)
+
       onProgress('Uploading notes...')
       session.driveTranscriptFileId = await uploadFileToDrive(
         config,
         paths.transcript,
         `${sanitizeFileName(payload.title)}.txt`,
-        'text/plain'
+        'text/plain',
+        driveSessionFolderId
       )
 
       removeLocalSessionFolder(sessionDir)
@@ -346,23 +349,23 @@ async function processNotesSession(
 
     session.status = 'complete'
     await saveRecordingMetadata(config, session)
-    await notifyHost(config, session)
 
     const message = config.driveFolderId
-      ? `Notes uploaded to Google Drive${config.driveFolderLabel ? `\n${config.driveFolderLabel}` : ''}.\nThe local copy was removed.`
+      ? `Notes uploaded to Google Drive folder "${payload.sessionId}"${config.driveFolderLabel ? `\nInside: ${config.driveFolderLabel}` : ''}.\nThe local copy was removed.`
       : `Notes saved on this computer.\n\n${sessionDir}`
 
     onProgress('All done!')
+    unregisterSession(payload.sessionId)
     return {
       session,
       message
     }
   } catch (error) {
-    cleanupTempFiles({
+    cleanupTempMedia({
       webm: paths.webm,
-      wav: paths.wav,
-      captions: join(sessionDir, 'meet-captions.json')
+      wav: paths.wav
     })
+    unregisterSession(payload.sessionId)
     session.status = 'error'
     session.error = error instanceof Error ? error.message : String(error)
     await saveRecordingMetadata(config, session)

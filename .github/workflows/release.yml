@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache bundled tools
+        uses: actions/cache@v4
+        with:
+          path: resources/bin
+          key: bundled-tools-${{ hashFiles('scripts/prepare-bundled-tools.ps1') }}
+
+      - name: Create release .env
+        shell: pwsh
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+          CARE_GITHUB_UPDATE_TOKEN: ${{ secrets.CARE_GITHUB_UPDATE_TOKEN }}
+        run: |
+          @"
+          CARE_ALLOWED_EMAIL_DOMAIN=carehelps.ca
+          GOOGLE_CLIENT_ID=$env:GOOGLE_CLIENT_ID
+          GOOGLE_CLIENT_SECRET=$env:GOOGLE_CLIENT_SECRET
+          GOOGLE_API_KEY=$env:GOOGLE_API_KEY
+          GOOGLE_DRIVE_FOLDER_ID=$env:GOOGLE_DRIVE_FOLDER_ID
+          FIREBASE_API_KEY=$env:FIREBASE_API_KEY
+          FIREBASE_PROJECT_ID=$env:FIREBASE_PROJECT_ID
+          FIREBASE_APP_ID=$env:FIREBASE_APP_ID
+          CARE_GITHUB_UPDATE_TOKEN=$env:CARE_GITHUB_UPDATE_TOKEN
+          "@ | Set-Content -Encoding utf8 .env
+
+      - name: Build signed installer and publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: npm run package:publish
+
+      - name: Upload workflow artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-debug
+          path: release/**

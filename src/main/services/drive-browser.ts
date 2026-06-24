@@ -33,6 +33,13 @@ export async function listDriveFolders(
   parentId: string,
   driveId?: string
 ): Promise<DriveFolderEntry[]> {
+  if (!/^[a-zA-Z0-9_-]+$/.test(parentId)) {
+    throw new Error('Invalid folder id.')
+  }
+  if (driveId && !/^[a-zA-Z0-9_-]+$/.test(driveId)) {
+    throw new Error('Invalid shared drive id.')
+  }
+
   const auth = await getAuthorizedClient(config)
   const drive = google.drive({ version: 'v3', auth })
 

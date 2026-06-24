@@ -80,18 +80,14 @@ export interface AppConfig {
   googleClientId: string
   googleClientSecret: string
   googleRedirectUri: string
+  googleApiKey: string
+  googleAppId: string
   driveFolderId: string
   driveFolderLabel: string
   driveId?: string
-  googleChatWebhookUrl?: string
   firebaseApiKey: string
   firebaseProjectId: string
   firebaseAppId: string
-  notifyEmail: string
-  smtpHost: string
-  smtpPort: number
-  smtpUser: string
-  smtpPass: string
 }
 
 export interface ProcessingResult {
@@ -119,6 +115,20 @@ export interface MeetCallEndedEvent {
   reason: MeetCallEndedReason
 }
 
+export type AppUpdateStatus =
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'not-available'
+  | 'error'
+
+export interface AppUpdateEvent {
+  status: AppUpdateStatus
+  version?: string
+  message?: string
+}
+
 export interface MeetStatus {
   open: boolean
   url: string
@@ -130,8 +140,10 @@ export interface CareRecorderAPI {
   getConfig: () => Promise<
     Pick<AppConfig, 'recordingsDir' | 'whisperEnabled' | 'driveFolderId' | 'driveFolderLabel'> & {
       transcriptionReady: boolean
+      recordingsDirLocked: boolean
     }
   >
+  chooseRecordingsDir: () => Promise<string | null>
   getCaptureSources: () => Promise<CaptureSource[]>
   setCaptureMode: (mode: CaptureMode) => Promise<void>
   setCaptureSource: (sourceId: string) => Promise<void>
@@ -139,12 +151,22 @@ export interface CareRecorderAPI {
   openMeet: (url: string) => Promise<MeetStatus>
   openMeetInBrowser: (url: string) => Promise<void>
   getMeetStatus: () => Promise<MeetStatus>
-  getMeetCaptionStatus: () => Promise<{ on: boolean }>
+  getMeetCaptionStatus: () => Promise<{
+    on: boolean
+    regionFound: boolean
+    visibleRows: number
+    linesCaptured: number
+    hasSpeakerNames: boolean
+  }>
   getSidebarExpanded: () => Promise<boolean>
   setSidebarExpanded: (expanded: boolean) => Promise<boolean>
   toggleSidebar: () => Promise<boolean>
   prepareCapture: () => Promise<{ ready: boolean; message?: string }>
   ensureMicrophoneAccess: () => Promise<{ granted: boolean; message?: string }>
+  getMicrophonePermissionStatus: () => Promise<{ status: 'granted' | 'denied' | 'unknown' }>
+  initializeMicrophone: () => Promise<{ status: 'granted' | 'denied' | 'warmup' }>
+  confirmMicrophoneGranted: () => Promise<void>
+  markMicrophoneDenied: () => Promise<void>
   openMicrophoneSettings: () => Promise<void>
   resetMicrophonePermissions: () => Promise<void>
   startGoogleAuth: () => Promise<{ success: boolean; email?: string; error?: string }>
@@ -152,8 +174,7 @@ export interface CareRecorderAPI {
   getDriveDestination: () => Promise<DriveDestination | null>
   setDriveDestination: (destination: DriveDestination) => Promise<DriveDestination>
   clearDriveDestination: () => Promise<void>
-  listDriveRoots: () => Promise<DriveRootEntry[]>
-  listDriveFolders: (parentId: string, driveId?: string) => Promise<DriveFolderEntry[]>
+  pickDriveFolder: () => Promise<DriveDestination | null>
   getCalendarMeetings: () => Promise<CalendarMeeting[]>
   getCurrentMeeting: () => Promise<CalendarMeeting | null>
   beginRecordingSession: (payload: {
@@ -167,6 +188,10 @@ export interface CareRecorderAPI {
   onProcessingProgress: (callback: (message: string) => void) => () => void
   onMeetCallEnded: (callback: (event: MeetCallEndedEvent) => void) => () => void
   onSidebarChanged: (callback: (expanded: boolean) => void) => () => void
+  getAppVersion: () => Promise<string>
+  checkForUpdates: () => Promise<AppUpdateEvent>
+  installAppUpdate: () => Promise<{ installed: boolean }>
+  onAppUpdate: (callback: (event: AppUpdateEvent) => void) => () => void
 }
 
 declare global {

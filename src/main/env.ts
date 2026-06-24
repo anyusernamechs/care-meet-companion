@@ -5,13 +5,10 @@ import dotenv from 'dotenv'
 
 export function bootstrapEnv(): void {
   const userDataEnv = join(app.getPath('userData'), '.env')
-  const bundledEnv = join(process.resourcesPath, '.env')
   const bundledExample = join(process.resourcesPath, '.env.example')
 
   if (app.isPackaged && !existsSync(userDataEnv)) {
-    if (existsSync(bundledEnv)) {
-      copyFileSync(bundledEnv, userDataEnv)
-    } else if (existsSync(bundledExample)) {
+    if (existsSync(bundledExample)) {
       copyFileSync(bundledExample, userDataEnv)
     }
   }
