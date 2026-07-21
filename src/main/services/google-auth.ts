@@ -13,6 +13,7 @@ export const GOOGLE_SCOPES = [
   'openid',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/calendar.readonly',
+  'https://www.googleapis.com/auth/meetings.space.readonly',
   'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/drive.metadata.readonly'
@@ -123,6 +124,7 @@ export async function startGoogleAuth(
     scope: GOOGLE_SCOPES,
     state: oauthState,
     hd: allowedEmailDomain(),
+    login_hint: existing?.email,
     include_granted_scopes: true
   })
 
@@ -271,6 +273,22 @@ export async function startGoogleAuth(
       finish({ success: false, error: 'Sign-in timed out. Please try again.' })
     }, OAUTH_TIMEOUT_MS)
   })
+}
+
+export async function signOutGoogle(config: AppConfig): Promise<void> {
+  const tokens = loadTokens()
+  const token = tokens?.refresh_token || tokens?.access_token
+
+  try {
+    if (token && config.googleClientId) {
+      const client = createOAuthClient(config)
+      await client.revokeToken(token)
+    }
+  } catch (error) {
+    log.warn('auth', 'Google token revocation failed; clearing the local session', error)
+  } finally {
+    clearTokens()
+  }
 }
 
 export async function getAuthorizedClient(config: AppConfig) {

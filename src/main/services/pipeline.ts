@@ -1,4 +1,4 @@
-import { createWriteStream, existsSync, mkdirSync, rmSync, statSync, unlinkSync, writeFileSync, type WriteStream } from 'fs'
+import { createWriteStream, existsSync, mkdirSync, statSync, unlinkSync, writeFileSync, type WriteStream } from 'fs'
 import { join } from 'path'
 import { getSessionDir, loadConfig } from '../config'
 import { assertRegisteredSession, unregisterSession } from '../session-registry'
@@ -10,6 +10,7 @@ import {
   sessionPaths
 } from './ffmpeg'
 import { generateTranscript } from './whisper'
+import { fetchMeetArtifacts } from './meet-artifacts'
 import {
   captionsIncludeSpeakerNames,
   formatMeetCaptionTranscript,
@@ -155,15 +156,6 @@ function cleanupTempMedia(paths: { webm: string; wav: string }): void {
   }
 }
 
-function removeLocalSessionFolder(sessionDir: string): void {
-  if (!existsSync(sessionDir)) return
-  try {
-    rmSync(sessionDir, { recursive: true, force: true })
-  } catch {
-    // ignore cleanup errors
-  }
-}
-
 export async function processRecording(
   payload: StartProcessingPayload,
   onProgress: (message: string) => void
@@ -176,7 +168,13 @@ export async function processRecording(
 
   await finalizeSession(payload.sessionId)
 
-  const config = loadConfig()
+  const baseConfig = loadConfig()
+  const config = {
+    ...baseConfig,
+    driveFolderId: payload.driveDestination?.folderId || '',
+    driveFolderLabel: payload.driveDestination?.pathLabel || '',
+    driveId: payload.driveDestination?.driveId
+  }
   const sessionDir = getSessionDir(config, payload.sessionId)
   const paths = sessionPaths(sessionDir, payload.title)
 
@@ -187,12 +185,16 @@ export async function processRecording(
     title: payload.title,
     startedAt: payload.startedAt,
     hostEmail: payload.hostEmail,
+    hostDisplayName: payload.hostDisplayName,
+    participantNames: payload.participantNames,
     calendarEventId: payload.calendarEventId,
     hangoutLink: payload.hangoutLink,
     meetingCode: payload.meetingCode,
     status: 'processing',
     localMp4Path: paths.mp4,
-    localTranscriptPath: paths.transcript
+    localTranscriptPath: paths.transcript,
+    driveFolderId: payload.driveDestination?.folderId,
+    driveFolderLabel: payload.driveDestination?.pathLabel
   }
 
   try {
@@ -202,21 +204,17 @@ export async function processRecording(
     await stopMeetCaptionCapture()
     const captionLines = loadMeetCaptions(sessionDir)
     const sourceMedia = await probeMediaFile(config, paths.webm)
+    onProgress('Checking for an official Google Meet transcript...')
+    const meetArtifacts = await fetchMeetArtifacts(config, payload.meetingCode)
     const captionsWithNames =
       hasUsableMeetCaptions(captionLines) && captionsIncludeSpeakerNames(captionLines)
 
-    if (captionsWithNames) {
+    if (meetArtifacts?.transcript) {
+      onProgress('Saving the official transcript with participant names...')
+      writeFileSync(paths.transcript, meetArtifacts.transcript, 'utf8')
+    } else if (captionsWithNames) {
       onProgress('Saving transcript with participant names...')
       writeFileSync(paths.transcript, formatMeetCaptionTranscript(captionLines), 'utf8')
-    } else if (hasUsableMeetCaptions(captionLines)) {
-      onProgress('Saving transcript from Meet captions...')
-      let transcript = formatMeetCaptionTranscript(captionLines)
-      transcript += [
-        '',
-        'Note: Speaker names were not available from Meet captions for this session.',
-        'In Meet, open caption settings and enable speaker names, then record again.'
-      ].join('\n')
-      writeFileSync(paths.transcript, transcript, 'utf8')
     } else if (sourceMedia.hasAudio) {
       onProgress('Writing the transcript...')
       const recordingMs = Date.now() - new Date(payload.startedAt).getTime()
@@ -224,7 +222,26 @@ export async function processRecording(
         onProgress('Writing the transcript… this may take several minutes for long meetings.')
       }
       await extractAudioWav(config, paths.webm, paths.wav)
-      await generateTranscript(config, paths.wav, paths.transcript)
+      const localTranscript = await generateTranscript(config, paths.wav, paths.transcript)
+      const host = payload.hostDisplayName || payload.hostEmail || 'Meeting host'
+      const participants = [
+        ...(meetArtifacts?.participantNames || []),
+        ...(payload.participantNames || [])
+      ]
+        .filter((name) => name && name.toLowerCase() !== host.toLowerCase())
+        .filter((name, index, all) => all.indexOf(name) === index)
+      const identityHeader = [
+        'Meeting transcript',
+        '',
+        `Host: ${host}`,
+        participants.length ? `Participants: ${participants.join(', ')}` : '',
+        'Speaker attribution was unavailable for this audio transcription; names are listed for context only.',
+        '',
+        localTranscript
+      ]
+        .filter((line, index) => line !== '' || index === 1 || index >= 5)
+        .join('\n')
+      writeFileSync(paths.transcript, identityHeader, 'utf8')
     } else {
       writeFileSync(
         paths.transcript,
@@ -261,14 +278,13 @@ export async function processRecording(
         driveSessionFolderId
       )
 
-      removeLocalSessionFolder(sessionDir)
     }
 
     session.status = 'complete'
     await saveRecordingMetadata(config, session)
 
     const message = config.driveFolderId
-      ? `Uploaded to Google Drive folder "${payload.sessionId}"${config.driveFolderLabel ? `\nInside: ${config.driveFolderLabel}` : ''}.\nThe local copy was removed.`
+      ? `Uploaded to Google Drive${config.driveFolderLabel ? `\nDestination: ${config.driveFolderLabel}` : ''}.\nA local backup was kept at:\n${sessionDir}`
       : `Saved on this computer.\n\n${sessionDir}`
 
     onProgress('All done!')
@@ -278,10 +294,8 @@ export async function processRecording(
       message
     }
   } catch (error) {
-    cleanupTempMedia({
-      webm: paths.webm,
-      wav: paths.wav
-    })
+    // Preserve the source WebM (and any extracted audio) when processing fails.
+    // It may be the only recoverable copy and is useful for support diagnostics.
     unregisterSession(payload.sessionId)
     session.status = 'error'
     session.error = error instanceof Error ? error.message : String(error)
@@ -294,7 +308,13 @@ async function processNotesSession(
   payload: StartProcessingPayload,
   onProgress: (message: string) => void
 ): Promise<ProcessingResult> {
-  const config = loadConfig()
+  const baseConfig = loadConfig()
+  const config = {
+    ...baseConfig,
+    driveFolderId: payload.driveDestination?.folderId || '',
+    driveFolderLabel: payload.driveDestination?.pathLabel || '',
+    driveId: payload.driveDestination?.driveId
+  }
   const sessionDir = getSessionDir(config, payload.sessionId)
   const paths = sessionPaths(sessionDir, payload.title)
 
@@ -307,7 +327,9 @@ async function processNotesSession(
     hangoutLink: payload.hangoutLink,
     meetingCode: payload.meetingCode,
     status: 'processing',
-    localTranscriptPath: paths.transcript
+    localTranscriptPath: paths.transcript,
+    driveFolderId: payload.driveDestination?.folderId,
+    driveFolderLabel: payload.driveDestination?.pathLabel
   }
 
   try {
@@ -344,14 +366,13 @@ async function processNotesSession(
         driveSessionFolderId
       )
 
-      removeLocalSessionFolder(sessionDir)
     }
 
     session.status = 'complete'
     await saveRecordingMetadata(config, session)
 
     const message = config.driveFolderId
-      ? `Notes uploaded to Google Drive folder "${payload.sessionId}"${config.driveFolderLabel ? `\nInside: ${config.driveFolderLabel}` : ''}.\nThe local copy was removed.`
+      ? `Notes uploaded to Google Drive${config.driveFolderLabel ? `\nDestination: ${config.driveFolderLabel}` : ''}.\nA local backup was kept at:\n${sessionDir}`
       : `Notes saved on this computer.\n\n${sessionDir}`
 
     onProgress('All done!')

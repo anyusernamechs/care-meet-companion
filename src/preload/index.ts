@@ -3,6 +3,7 @@ import type { CareRecorderAPI, MeetCallEndedEvent, AppUpdateEvent } from '../sha
 
 const api: CareRecorderAPI = {
   getConfig: () => ipcRenderer.invoke('care:get-config'),
+  getStorageStatus: () => ipcRenderer.invoke('care:get-storage-status'),
   chooseRecordingsDir: () => ipcRenderer.invoke('care:choose-recordings-dir'),
   getCaptureSources: () => ipcRenderer.invoke('care:get-capture-sources'),
   setCaptureMode: (mode) => ipcRenderer.invoke('care:set-capture-mode', mode),
@@ -12,6 +13,8 @@ const api: CareRecorderAPI = {
   openMeet: (url) => ipcRenderer.invoke('care:open-meet', url),
   openMeetInBrowser: (url) => ipcRenderer.invoke('care:open-meet-browser', url),
   getMeetStatus: () => ipcRenderer.invoke('care:get-meet-status'),
+  closeMeet: () => ipcRenderer.invoke('care:close-meet'),
+  getMeetAccountEmail: () => ipcRenderer.invoke('care:get-meet-account-email'),
   getMeetCaptionStatus: () => ipcRenderer.invoke('care:get-meet-caption-status'),
   getSidebarExpanded: () => ipcRenderer.invoke('care:get-sidebar-expanded'),
   setSidebarExpanded: (expanded) => ipcRenderer.invoke('care:set-sidebar-expanded', expanded),
@@ -25,6 +28,7 @@ const api: CareRecorderAPI = {
   openMicrophoneSettings: () => ipcRenderer.invoke('care:open-microphone-settings'),
   resetMicrophonePermissions: () => ipcRenderer.invoke('care:reset-microphone-permissions'),
   startGoogleAuth: () => ipcRenderer.invoke('care:start-google-auth'),
+  signOutGoogle: () => ipcRenderer.invoke('care:sign-out-google'),
   getAuthStatus: () => ipcRenderer.invoke('care:get-auth-status'),
   getDriveDestination: () => ipcRenderer.invoke('care:get-drive-destination'),
   setDriveDestination: (destination) => ipcRenderer.invoke('care:set-drive-destination', destination),
@@ -73,7 +77,9 @@ const api: CareRecorderAPI = {
     return () => {
       ipcRenderer.removeListener('care:app-update', listener)
     }
-  }
+  },
+  hideToTray: () => ipcRenderer.invoke('care:hide-to-tray'),
+  showWindow: () => ipcRenderer.invoke('care:show-window')
 }
 
 contextBridge.exposeInMainWorld('careRecorder', api)

@@ -51,7 +51,12 @@
       /rejoin the meeting/i.test(t) ||
       /thanks for joining/i.test(t) ||
       /meeting has ended/i.test(t) ||
-      /return to home screen/i.test(t)
+      /return to home screen/i.test(t) ||
+      /get a link you can share/i.test(t) ||
+      /click new meeting to get a link/i.test(t) ||
+      /start an instant meeting/i.test(t) ||
+      /schedule in google calendar/i.test(t) ||
+      /enter a code or link/i.test(t)
     )
   }
 

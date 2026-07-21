@@ -1,120 +1,143 @@
-const statusEl = document.getElementById('status') as HTMLParagraphElement
-const errorEl = document.getElementById('error') as HTMLParagraphElement
-const spinnerEl = document.getElementById('spinner') as HTMLElement
-
-function showError(message: string): void {
-  spinnerEl.classList.add('hidden')
-  statusEl.classList.add('hidden')
-  errorEl.textContent = message
-  errorEl.classList.remove('hidden')
-}
-
-function resolvePickerOrigin(): string {
-  const origin = window.location.origin
-  if (origin && origin !== 'null' && !origin.startsWith('file:')) {
-    return origin
-  }
-  return 'http://localhost'
-}
-
-function loadPickerApi(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (window.gapi?.load) {
-      window.gapi.load('picker', { callback: () => resolve() })
-      return
-    }
-
-    const script = document.createElement('script')
-    script.src = 'https://apis.google.com/js/api.js'
-    script.async = true
-    script.onload = () => {
-      window.gapi.load('picker', { callback: () => resolve() })
-    }
-    script.onerror = () => reject(new Error('Could not load Google Picker.'))
-    document.head.appendChild(script)
-  })
-}
-
-function showPicker(credentials: { token: string; apiKey: string; appId: string }): void {
-  const googlePicker = window.google?.picker
-  if (!googlePicker) {
-    showError('Google Picker failed to initialize.')
-    return
-  }
-
-  const origin = resolvePickerOrigin()
-  console.info('[drive-picker] origin', origin)
-
-  const myDrive = new googlePicker.DocsView(googlePicker.ViewId.FOLDERS)
-    .setIncludeFolders(true)
-    .setSelectFolderEnabled(true)
-    .setMimeTypes('application/vnd.google-apps.folder')
-    .setLabel('My Drive')
-
-  const sharedDrives = new googlePicker.DocsView(googlePicker.ViewId.FOLDERS)
-    .setIncludeFolders(true)
-    .setSelectFolderEnabled(true)
-    .setEnableDrives(true)
-    .setMimeTypes('application/vnd.google-apps.folder')
-    .setLabel('Shared drives')
-
-  const sharedWithMe = new googlePicker.DocsView(googlePicker.ViewId.FOLDERS)
-    .setIncludeFolders(true)
-    .setSelectFolderEnabled(true)
-    .setOwnedByMe(false)
-    .setMimeTypes('application/vnd.google-apps.folder')
-    .setLabel('Shared with me')
-
-  const builder = new googlePicker.PickerBuilder()
-    .setTitle('Select upload folder')
-    .setOAuthToken(credentials.token)
-    .setDeveloperKey(credentials.apiKey)
-    .setAppId(credentials.appId)
-    .setOrigin(origin)
-    .addView(myDrive)
-    .addView(sharedDrives)
-    .addView(sharedWithMe)
-    .enableFeature(googlePicker.Feature.SUPPORT_DRIVES)
-    .setCallback((data: google.picker.ResponseObject) => {
-      console.info('[drive-picker] callback', data.action)
-
-      if (data.action === googlePicker.Action.PICKED && data.docs?.[0]) {
-        const doc = data.docs[0]
-        window.drivePickerBridge.submit({
-          folderId: doc.id,
-          folderName: doc.name || 'Selected folder',
-          pathLabel: doc.name || 'Selected folder',
-          driveId: doc.driveId || undefined
-        })
-        return
-      }
-
-      if (data.action === googlePicker.Action.CANCEL) {
-        window.drivePickerBridge.cancel()
-      }
-    })
-
-  spinnerEl.classList.add('hidden')
-  statusEl.textContent = 'Choose a folder in the Google Drive window.'
-  builder.build().setVisible(true)
-}
-
-async function bootstrap(): Promise<void> {
-  try {
-    if (!window.drivePickerBridge) {
-      throw new Error('Picker bridge is not available. Restart the app.')
-    }
-
-    const credentials = await window.drivePickerBridge.getCredentials()
-    await loadPickerApi()
-    showPicker(credentials)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    console.error('[drive-picker] bootstrap failed', error)
-    showError(message)
-    window.setTimeout(() => window.drivePickerBridge?.cancel(), 8000)
-  }
-}
-
-void bootstrap()
-
+interface DriveLocation {
+  id: string
+  name: string
+  driveId?: string
+}
+
+const statusEl = document.getElementById('status') as HTMLParagraphElement
+const errorEl = document.getElementById('error') as HTMLParagraphElement
+const spinnerEl = document.getElementById('spinner') as HTMLElement
+const rootsEl = document.getElementById('roots') as HTMLDivElement
+const breadcrumbEl = document.getElementById('breadcrumb') as HTMLDivElement
+const foldersEl = document.getElementById('folders') as HTMLDivElement
+const backButton = document.getElementById('back-button') as HTMLButtonElement
+const chooseButton = document.getElementById('choose-button') as HTMLButtonElement
+const cancelButton = document.getElementById('cancel-button') as HTMLButtonElement
+
+let path: DriveLocation[] = []
+
+function showError(message: string): void {
+  spinnerEl.classList.add('hidden')
+  statusEl.classList.add('hidden')
+  errorEl.textContent = message
+  errorEl.classList.remove('hidden')
+}
+
+function setLoading(message: string): void {
+  spinnerEl.classList.remove('hidden')
+  statusEl.textContent = message
+  statusEl.classList.remove('hidden')
+  errorEl.classList.add('hidden')
+}
+
+function currentLocation(): DriveLocation | undefined {
+  return path[path.length - 1]
+}
+
+function renderBreadcrumb(): void {
+  breadcrumbEl.replaceChildren()
+  path.forEach((location, index) => {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.textContent = location.name
+    button.addEventListener('click', () => {
+      path = path.slice(0, index + 1)
+      void loadCurrentFolder()
+    })
+    breadcrumbEl.appendChild(button)
+    if (index < path.length - 1) breadcrumbEl.append('›')
+  })
+  backButton.disabled = path.length <= 1
+}
+
+async function loadCurrentFolder(): Promise<void> {
+  const current = currentLocation()
+  if (!current) return
+  setLoading(`Loading ${current.name}…`)
+  renderBreadcrumb()
+  foldersEl.replaceChildren()
+
+  try {
+    const folders = await window.drivePickerBridge.listFolders(current.id, current.driveId)
+    spinnerEl.classList.add('hidden')
+    statusEl.textContent = folders.length
+      ? 'Open a folder, or choose the current folder.'
+      : 'This folder has no subfolders. You can choose it.'
+    chooseButton.disabled = false
+
+    for (const folder of folders) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'folder-row'
+      const icon = document.createElement('span')
+      icon.className = 'folder-icon'
+      icon.setAttribute('aria-hidden', 'true')
+      icon.textContent = '▰'
+      const name = document.createElement('span')
+      name.textContent = folder.name
+      const arrow = document.createElement('span')
+      arrow.setAttribute('aria-hidden', 'true')
+      arrow.textContent = '›'
+      button.append(icon, name, arrow)
+      button.addEventListener('click', () => {
+        path.push({ id: folder.id, name: folder.name, driveId: current.driveId })
+        void loadCurrentFolder()
+      })
+      foldersEl.appendChild(button)
+    }
+  } catch (error) {
+    showError(error instanceof Error ? error.message : String(error))
+  }
+}
+
+async function bootstrap(): Promise<void> {
+  try {
+    setLoading('Loading Google Drive…')
+    const roots = await window.drivePickerBridge.listRoots()
+    spinnerEl.classList.add('hidden')
+    statusEl.textContent = 'Choose My Drive or a Shared Drive.'
+    for (const root of roots) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'root-button'
+      button.textContent = root.name
+      button.addEventListener('click', () => {
+        path = [root]
+        rootsEl.classList.add('hidden')
+        void loadCurrentFolder()
+      })
+      rootsEl.appendChild(button)
+    }
+  } catch (error) {
+    showError(error instanceof Error ? error.message : String(error))
+  }
+}
+
+backButton.addEventListener('click', () => {
+  if (path.length > 1) {
+    path.pop()
+    void loadCurrentFolder()
+    return
+  }
+  path = []
+  foldersEl.replaceChildren()
+  breadcrumbEl.replaceChildren()
+  rootsEl.classList.remove('hidden')
+  chooseButton.disabled = true
+  backButton.disabled = true
+})
+
+chooseButton.addEventListener('click', () => {
+  const current = currentLocation()
+  if (!current) return
+  window.drivePickerBridge.submit({
+    folderId: current.id,
+    folderName: current.name,
+    pathLabel: path.map((entry) => entry.name).join(' / '),
+    driveId: current.driveId
+  })
+})
+
+cancelButton.addEventListener('click', () => window.drivePickerBridge.cancel())
+
+void bootstrap()

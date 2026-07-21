@@ -5,52 +5,48 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Choose a Google Drive folder</title>
     <style>
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        font-family: 'Segoe UI', system-ui, sans-serif;
-        background: #f1f3f4;
-        color: #202124;
-      }
-      .panel {
-        text-align: center;
-        padding: 32px;
-      }
-      .spinner {
-        width: 36px;
-        height: 36px;
-        border: 3px solid #dadce0;
-        border-top-color: #1a73e8;
-        border-radius: 50%;
-        margin: 0 auto 16px;
-        animation: spin 0.8s linear infinite;
-      }
-      @keyframes spin {
-        to {
-          transform: rotate(360deg);
-        }
-      }
-      .error {
-        color: #b3261e;
-        max-width: 420px;
-        line-height: 1.5;
-        margin: 0 auto;
-      }
-      .hidden {
-        display: none;
-      }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; font-family: "Segoe UI", system-ui, sans-serif; background: #f5f6f8; color: #202124; }
+      .shell { display: grid; grid-template-rows: auto auto 1fr auto; min-height: 100vh; }
+      header { padding: 20px 24px 14px; border-bottom: 1px solid #d9dde4; background: #fff; }
+      h1 { margin: 0 0 5px; font-size: 20px; font-weight: 650; }
+      p { margin: 0; color: #687080; font-size: 13px; }
+      .navigation { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 8px 24px; border-bottom: 1px solid #d9dde4; background: #fff; }
+      .breadcrumb { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+      .breadcrumb button { padding: 5px 7px; border: 0; background: transparent; color: #2856b6; font-weight: 600; }
+      button { font: inherit; cursor: pointer; }
+      button:disabled { cursor: default; opacity: .45; }
+      .back { padding: 7px 10px; border: 1px solid #cbd1da; border-radius: 6px; background: #fff; }
+      main { min-height: 0; overflow: auto; padding: 18px 24px; }
+      .roots { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+      .root-button { min-height: 72px; padding: 14px 16px; border: 1px solid #d6dbe3; border-radius: 9px; background: #fff; color: #1f2937; font-weight: 650; text-align: left; }
+      .root-button:hover, .folder-row:hover { border-color: #7893d8; background: #f6f8ff; }
+      .folders { overflow: hidden; border: 1px solid #d6dbe3; border-radius: 9px; background: #fff; }
+      .folders:empty { display: none; }
+      .folder-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; min-height: 50px; padding: 9px 14px; border: 0; border-bottom: 1px solid #ebedf1; background: #fff; color: #252a32; text-align: left; }
+      .folder-row:last-child { border-bottom: 0; }
+      .folder-icon { color: #e3aa27; font-size: 18px; }
+      .status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+      .spinner { width: 18px; height: 18px; flex: 0 0 auto; border: 2px solid #d4d9e1; border-top-color: #315fca; border-radius: 50%; animation: spin .8s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .error { color: #b42318; }
+      footer { display: flex; justify-content: flex-end; gap: 9px; padding: 12px 24px; border-top: 1px solid #d9dde4; background: #fff; }
+      footer button { min-height: 38px; padding: 8px 14px; border: 1px solid #cbd1da; border-radius: 7px; background: #fff; font-weight: 600; }
+      footer .primary { border-color: #315fca; background: #315fca; color: #fff; }
+      .hidden { display: none !important; }
     </style>
   </head>
   <body>
-    <div class="panel">
-      <div class="spinner" id="spinner"></div>
-      <p id="status">Opening Google Drive picker...</p>
-      <p id="error" class="error hidden"></p>
+    <div class="shell">
+      <header><h1>Choose a Google Drive folder</h1><p>Select the candidate, case, or project folder for this meeting.</p></header>
+      <div class="navigation"><button id="back-button" class="back" type="button" disabled>Back</button><div id="breadcrumb" class="breadcrumb"></div></div>
+      <main>
+        <div class="status-row"><div id="spinner" class="spinner"></div><p id="status">Loading Google Drive…</p></div>
+        <p id="error" class="error hidden"></p>
+        <div id="roots" class="roots"></div>
+        <div id="folders" class="folders"></div>
+      </main>
+      <footer><button id="cancel-button" type="button">Cancel</button><button id="choose-button" class="primary" type="button" disabled>Choose this folder</button></footer>
     </div>
     <script type="module" src="./picker.ts"></script>
   </body>

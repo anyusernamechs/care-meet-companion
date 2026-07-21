@@ -21,7 +21,7 @@ A GCP project was created under the **carehelps.ca** org:
 | --- | --- |
 | Project ID | `care-meet-recorder` |
 | Project name | CARE Meet Recorder |
-| Enabled APIs | Drive, Calendar, Chat, **Google Picker** |
+| Enabled APIs | Drive, Calendar, Meet REST, Chat, **Google Picker** |
 
 Verify:
 
@@ -43,10 +43,13 @@ gcloud services list --enabled --project=care-meet-recorder
 6. **Scopes → Add or remove scopes:**
    - `.../auth/userinfo.email`
    - `.../auth/calendar.readonly`
+   - `.../auth/meetings.space.readonly` (participant roster and official transcript entries)
    - `.../auth/drive.file`
    - `.../auth/drive.readonly` (folder picker browsing)
    - `.../auth/drive.metadata.readonly`
 7. Save
+
+Enable the [Google Meet REST API](https://console.cloud.google.com/apis/library/meet.googleapis.com?project=care-meet-recorder). Existing desktop users must click **Reconnect** once after this scope is added.
 
 For a **Google for Nonprofits** Workspace, Internal publishing keeps the app available to all `@carehelps.ca` users without public verification.
 

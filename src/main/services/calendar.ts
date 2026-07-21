@@ -63,6 +63,10 @@ function mapEvent(event: calendar_v3.Schema$Event): CalendarMeeting | null {
     meetingCode,
     organizerEmail: event.organizer?.email || undefined,
     organizerName: event.organizer?.displayName || undefined,
+    attendeeNames: (event.attendees || [])
+      .filter((attendee) => !attendee.self && attendee.responseStatus !== 'declined')
+      .map((attendee) => attendee.displayName || attendee.email || '')
+      .filter(Boolean),
     isActive: now >= startTime && now <= endTime,
     isUpcoming: now < startTime
   }

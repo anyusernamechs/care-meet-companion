@@ -1,6 +1,6 @@
-import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, desktopCapturer, dialog, globalShortcut, ipcMain, nativeImage, powerSaveBlocker, shell } from 'electron'
 import type { OpenDialogOptions } from 'electron'
-import { mkdirSync } from 'fs'
+import { mkdirSync, statfsSync } from 'fs'
 import { join } from 'path'
 import { setMainWindow, getMainWindow } from './app-window'
 import { getAppIconPath } from './branding'
@@ -19,14 +19,13 @@ import { getMeetCaptionStatus, startMeetCaptionCapture } from './meet-captions'
 import { markMeetCallActive, onMeetCallEnded, resetMeetCallMonitor } from './meet-session-monitor'
 import {
   applySidebarLayout,
-  ensureMeetView,
+  closeMeetView,
   getMeetStatus,
+  getMeetAccountEmail,
   installMeetWindowHandlers,
   isSidebarExpanded,
   openMeetInBrowser,
-  openMeetUrl,
-  PANEL_SEPARATOR,
-  SIDEBAR_WIDTH
+  openMeetUrl
 } from './meet-view'
 import { getRecordingsRoot, resolveSessionFolderName } from './paths'
 import {
@@ -39,6 +38,14 @@ import {
   resetMicrophonePermissions
 } from './permissions'
 import { setRecordingActive } from './recording-state'
+import { isLongTaskActive, setLongTaskActiveFlag } from './long-task'
+import {
+  hideMainWindow,
+  installWindowTrayBehavior,
+  setTrayTooltip,
+  showDesktopNotification,
+  showMainWindow
+} from './tray'
 import { listCalendarMeetings, getCurrentOrNextMeeting } from './services/calendar'
 import { pickDriveFolder, registerDrivePickerIpc } from './services/drive-picker-window'
 import {
@@ -50,7 +57,7 @@ import {
   loadDriveDestination,
   saveDriveDestination
 } from './services/drive-settings'
-import { establishFolderAccess, getAuthStatus, startGoogleAuth } from './services/drive'
+import { establishFolderAccess, getAuthStatus, signOutGoogle, startGoogleAuth } from './services/drive'
 import { appendChunk, beginNotesSession, beginSession, processRecording } from './services/pipeline'
 import type { CaptureMode, CaptureSource, MeetCallEndedEvent, SessionMode } from '../shared/types'
 import { assertTrustedRenderer } from './ipc-guard'
@@ -58,6 +65,19 @@ import { assertTrustedRenderer } from './ipc-guard'
 const progressCallbacks = new Set<(message: string) => void>()
 const meetEndedCallbacks = new Set<(event: MeetCallEndedEvent) => void>()
 const sidebarCallbacks = new Set<(expanded: boolean) => void>()
+let powerBlockerId: number | null = null
+
+function setLongTaskActive(active: boolean): void {
+  setLongTaskActiveFlag(active)
+  if (active && powerBlockerId === null) {
+    powerBlockerId = powerSaveBlocker.start('prevent-app-suspension')
+    setTrayTooltip('CARE Meet Companion — working…')
+  } else if (!active && powerBlockerId !== null) {
+    if (powerSaveBlocker.isStarted(powerBlockerId)) powerSaveBlocker.stop(powerBlockerId)
+    powerBlockerId = null
+    setTrayTooltip('CARE Meet Companion')
+  }
+}
 
 function getWindowIcon() {
   const image = nativeImage.createFromPath(getAppIconPath())
@@ -83,13 +103,13 @@ function toggleSidebar(): void {
 
 export function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1280,
-    height: 840,
-    minWidth: SIDEBAR_WIDTH + PANEL_SEPARATOR + 640,
+    width: 760,
+    height: 820,
+    minWidth: 640,
     minHeight: 640,
     title: 'CARE Meet Companion',
     icon: getWindowIcon(),
-    backgroundColor: '#8e9cb0',
+    backgroundColor: '#f4f5f7',
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -108,12 +128,11 @@ export function createMainWindow(): BrowserWindow {
   }
 
   installMeetWindowHandlers(window)
+  installWindowTrayBehavior(window)
 
   window.on('closed', () => {
     setMainWindow(null)
   })
-
-  ensureMeetView(window)
 
   return window
 }
@@ -140,6 +159,20 @@ export function registerIpcHandlers(): void {
         transcriptionReady: config.bundledToolsReady,
         driveFolderId: config.driveFolderId,
         driveFolderLabel: config.driveFolderLabel
+      }
+    })
+  )
+
+  ipcMain.handle(
+    'care:get-storage-status',
+    trustedHandler(() => {
+      const path = loadConfig().recordingsDir
+      mkdirSync(path, { recursive: true })
+      const stats = statfsSync(path)
+      return {
+        availableBytes: stats.bavail * stats.bsize,
+        totalBytes: stats.blocks * stats.bsize,
+        path
       }
     })
   )
@@ -237,6 +270,14 @@ export function registerIpcHandlers(): void {
   )
 
   ipcMain.handle('care:get-meet-status', trustedHandler(() => getMeetStatus()))
+  ipcMain.handle(
+    'care:close-meet',
+    trustedHandler(() => {
+      const mainWindow = getMainWindow()
+      if (mainWindow) closeMeetView(mainWindow)
+    })
+  )
+  ipcMain.handle('care:get-meet-account-email', trustedHandler(() => getMeetAccountEmail()))
   ipcMain.handle('care:get-meet-caption-status', trustedHandler(() => getMeetCaptionStatus()))
   ipcMain.handle('care:get-sidebar-expanded', trustedHandler(() => isSidebarExpanded()))
 
@@ -267,20 +308,28 @@ export function registerIpcHandlers(): void {
   )
 
   ipcMain.handle('care:get-auth-status', trustedHandler(() => getAuthStatus(loadConfig())))
+  ipcMain.handle(
+    'care:sign-out-google',
+    trustedHandler(async () => {
+      await signOutGoogle(loadConfig())
+      clearDriveDestination()
+    })
+  )
   ipcMain.handle('care:get-drive-destination', trustedHandler(() => loadDriveDestination()))
 
   ipcMain.handle(
     'care:set-drive-destination',
     trustedHandler(async (_event, destination) => {
-      saveDriveDestination(destination)
-      const config = loadConfig()
-      if (destination.folderId) {
-        try {
-          await establishFolderAccess(config, destination.folderId)
-        } catch (error) {
-          log.warn('drive', 'Could not establish folder access marker', error)
-        }
+      const config = {
+        ...loadConfig(),
+        driveFolderId: destination.folderId,
+        driveFolderLabel: destination.pathLabel,
+        driveId: destination.driveId
       }
+      if (destination.folderId) {
+        await establishFolderAccess(config, destination.folderId)
+      }
+      saveDriveDestination(destination)
       return loadDriveDestination()
     })
   )
@@ -350,7 +399,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     'care:set-recording-active',
     trustedHandler((_event, active: boolean) => {
-      setRecordingActive(Boolean(active))
+      const isActive = Boolean(active)
+      setRecordingActive(isActive)
+      setLongTaskActive(isActive)
     })
   )
 
@@ -367,11 +418,53 @@ export function registerIpcHandlers(): void {
     trustedHandler(async (_event, payload) => {
       resetMeetCallMonitor()
       setRecordingActive(false)
-      return processRecording(payload, (message) => {
-        for (const callback of progressCallbacks) {
-          callback(message)
-        }
-      })
+      setLongTaskActive(true)
+      try {
+        const result = await processRecording(payload, (message) => {
+          setTrayTooltip(`CARE Meet Companion — ${message}`)
+          for (const callback of progressCallbacks) callback(message)
+        })
+        const hidden = (() => {
+          const mainWindow = getMainWindow()
+          return Boolean(mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible())
+        })()
+        showDesktopNotification(
+          'Recording ready',
+          result.message || 'Your recording finished saving and uploading.'
+        )
+        if (hidden) showMainWindow()
+        return result
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        showDesktopNotification('Could not finish saving', message)
+        showMainWindow()
+        throw error
+      } finally {
+        setLongTaskActive(false)
+      }
+    })
+  )
+
+  ipcMain.handle(
+    'care:hide-to-tray',
+    trustedHandler(async () => {
+      if (!isLongTaskActive()) {
+        return { hidden: false, reason: 'No background task is running.' }
+      }
+      hideMainWindow()
+      setTrayTooltip('CARE Meet Companion — uploading in background')
+      showDesktopNotification(
+        'Working in the background',
+        'Saving and Google Drive upload continue in the tray. You’ll get a notification when it’s done.'
+      )
+      return { hidden: true }
+    })
+  )
+
+  ipcMain.handle(
+    'care:show-window',
+    trustedHandler(async () => {
+      showMainWindow()
     })
   )
 

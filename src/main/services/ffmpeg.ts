@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import { existsSync, unlinkSync } from 'fs'
+import { existsSync } from 'fs'
 import { dirname, join } from 'path'
 import type { AppConfig } from '../../shared/types'
 
@@ -51,7 +51,7 @@ export function runCommand(
 export async function probeMediaFile(
   config: AppConfig,
   mediaPath: string
-): Promise<{ hasVideo: boolean; hasAudio: boolean }> {
+): Promise<{ hasVideo: boolean; hasAudio: boolean; durationSeconds: number }> {
   return new Promise((resolve) => {
     const child = spawn(config.ffmpegPath, ['-hide_banner', '-i', mediaPath], {
       windowsHide: true,
@@ -63,11 +63,16 @@ export async function probeMediaFile(
       stderr += data.toString()
     })
 
-    child.on('error', () => resolve({ hasVideo: false, hasAudio: false }))
+    child.on('error', () => resolve({ hasVideo: false, hasAudio: false, durationSeconds: 0 }))
     child.on('close', () => {
+      const duration = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/i)
+      const durationSeconds = duration
+        ? Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3])
+        : 0
       resolve({
         hasVideo: /Video:/i.test(stderr),
-        hasAudio: /Audio:/i.test(stderr)
+        hasAudio: /Audio:/i.test(stderr),
+        durationSeconds
       })
     })
   })
@@ -84,6 +89,14 @@ export async function convertWebmToMp4(
   }
 
   const source = await probeMediaFile(config, webmPath)
+  if (!source.hasVideo || !source.hasAudio) {
+    const missing = [!source.hasVideo ? 'video' : '', !source.hasAudio ? 'audio' : '']
+      .filter(Boolean)
+      .join(' and ')
+    throw new Error(
+      `Recording verification failed: the captured file has no ${missing}. The temporary recording was preserved for support.`
+    )
+  }
 
   const args = [
     '-y',
@@ -127,36 +140,18 @@ export async function convertWebmToMp4(
   await runCommand(config.ffmpegPath, args, onLog)
 
   const output = await probeMediaFile(config, mp4Path)
-  if (!output.hasAudio && source.hasAudio) {
+  if (!output.hasVideo || !output.hasAudio) {
     throw new Error(
-      'Recording audio was lost while saving the video. Please try another short test recording.'
+      'Recording verification failed after saving: the MP4 does not contain both video and audio. The temporary recording was preserved for support.'
     )
   }
-
-  if (!output.hasAudio) {
-    // Some WebM files expose audio in a way probe misses — verify with a quick extract.
-    const wavProbe = join(dirname(webmPath), '.audio-probe.wav')
-    try {
-      await extractAudioWav(config, webmPath, wavProbe)
-      if (existsSync(wavProbe)) {
-        throw new Error(
-          'Meeting audio was recorded but could not be added to the MP4. Please contact IT support.'
-        )
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('could not be added')) {
-        throw error
-      }
-      // No audio in source — video-only recording is acceptable.
-    } finally {
-      try {
-        if (existsSync(wavProbe)) {
-          unlinkSync(wavProbe)
-        }
-      } catch {
-        // ignore cleanup
-      }
-    }
+  if (
+    source.durationSeconds > 0 &&
+    output.durationSeconds < source.durationSeconds - Math.max(5, source.durationSeconds * 0.02)
+  ) {
+    throw new Error(
+      `Recording verification failed: the saved MP4 is shorter than the source (${Math.round(output.durationSeconds)}s vs ${Math.round(source.durationSeconds)}s). The temporary recording was preserved for recovery.`
+    )
   }
 }
 

@@ -3,6 +3,7 @@ import { bootstrapEnv } from './env'
 import { createMainWindow, registerIpcHandlers } from './ipc'
 import { registerAppPermissions } from './permissions'
 import { initAutoUpdates, registerAutoUpdateHandlers } from './auto-update'
+import { isAppQuitting, showMainWindow } from './tray'
 
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
@@ -22,22 +23,22 @@ if (!app.requestSingleInstanceLock()) {
     initAutoUpdates()
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
+      const windows = BrowserWindow.getAllWindows()
+      if (windows.length === 0) {
         createMainWindow()
+      } else {
+        showMainWindow()
       }
     })
   })
 
   app.on('second-instance', () => {
-    const windows = BrowserWindow.getAllWindows()
-    if (windows[0]) {
-      if (windows[0].isMinimized()) windows[0].restore()
-      windows[0].focus()
-    }
+    showMainWindow()
   })
 
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
+    // Hidden-to-tray keeps a BrowserWindow alive; only quit when intentionally exiting.
+    if (process.platform !== 'darwin' && isAppQuitting()) {
       app.quit()
     }
   })

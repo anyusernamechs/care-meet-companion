@@ -1,12 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('drivePickerBridge', {
-  getCredentials: () =>
-    ipcRenderer.invoke('drive-picker:get-credentials') as Promise<{
-      token: string
-      apiKey: string
-      appId: string
-    }>,
+  listRoots: () => ipcRenderer.invoke('drive-picker:list-roots'),
+  listFolders: (parentId: string, driveId?: string) =>
+    ipcRenderer.invoke('drive-picker:list-folders', parentId, driveId),
   submit: (result: {
     folderId: string
     folderName: string

@@ -4,22 +4,17 @@ import type { AppConfig } from '../../shared/types'
 import type { DriveDestination } from '../../shared/types'
 import { log } from '../logger'
 import { getAuthorizedClient } from './google-auth'
-
-interface PickerCredentials {
-  token: string
-  apiKey: string
-  appId: string
-}
+import { listDriveFolders, listDriveRoots } from './drive-browser'
 
 let pickerWindow: BrowserWindow | null = null
 let activeResolve: ((value: DriveDestination | null) => void) | null = null
-let pendingCredentials: PickerCredentials | null = null
+let pendingConfig: AppConfig | null = null
 let ipcRegistered = false
 
 function settlePicker(result: DriveDestination | null): void {
   const resolve = activeResolve
   activeResolve = null
-  pendingCredentials = null
+  pendingConfig = null
 
   if (pickerWindow && !pickerWindow.isDestroyed()) {
     pickerWindow.removeAllListeners('closed')
@@ -34,11 +29,14 @@ export function registerDrivePickerIpc(): void {
   if (ipcRegistered) return
   ipcRegistered = true
 
-  ipcMain.handle('drive-picker:get-credentials', () => {
-    if (!pendingCredentials) {
-      throw new Error('Drive picker is not ready.')
-    }
-    return pendingCredentials
+  ipcMain.handle('drive-picker:list-roots', async () => {
+    if (!pendingConfig) throw new Error('Drive browser is not ready.')
+    return listDriveRoots(pendingConfig)
+  })
+
+  ipcMain.handle('drive-picker:list-folders', async (_event, parentId: string, driveId?: string) => {
+    if (!pendingConfig) throw new Error('Drive browser is not ready.')
+    return listDriveFolders(pendingConfig, parentId, driveId)
   })
 
   ipcMain.on('drive-picker:submit', (_event, payload: DriveDestination) => {
@@ -54,33 +52,14 @@ export async function pickDriveFolder(
   config: AppConfig,
   parentWindow?: BrowserWindow | null
 ): Promise<DriveDestination | null> {
-  if (!config.googleApiKey) {
-    throw new Error(
-      'Google API key is not configured. Add GOOGLE_API_KEY to your .env file, then enable the Google Picker API in Google Cloud Console.'
-    )
-  }
-
-  if (!config.googleAppId) {
-    throw new Error('Google Cloud project number is missing. Check GOOGLE_CLIENT_ID in your .env file.')
-  }
-
-  const client = await getAuthorizedClient(config)
-  const tokenResponse = await client.getAccessToken()
-  const token = tokenResponse.token
-  if (!token) {
-    throw new Error('Google sign-in expired. Connect your account again.')
-  }
+  await getAuthorizedClient(config)
 
   if (pickerWindow && !pickerWindow.isDestroyed()) {
     pickerWindow.focus()
     throw new Error('Folder picker is already open.')
   }
 
-  pendingCredentials = {
-    token,
-    apiKey: config.googleApiKey,
-    appId: config.googleAppId
-  }
+  pendingConfig = config
 
   return new Promise((resolve) => {
     activeResolve = resolve

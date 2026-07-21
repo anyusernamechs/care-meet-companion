@@ -59,6 +59,24 @@ describe('filterCaptionsForTranscript', () => {
     expect(out).toEqual([{ speaker: 'Libin Varghese', text: 'Hi, how are you?', at }])
   })
 
+  it('drops Meet home-page actions instead of treating them as speech', () => {
+    const out = filterCaptionsForTranscript([
+      { speaker: 'Participant', text: 'Get a link you can share', at },
+      {
+        speaker: 'Participant',
+        text: 'Click New meeting to get a link you can send to people you want to meet with',
+        at
+      },
+      {
+        speaker: 'Participant',
+        text:
+          'Get a link you can shareClick New meeting to get a link you can send to people you want to meet with',
+        at
+      }
+    ])
+    expect(out).toEqual([])
+  })
+
   it('does not collapse unrelated lines that share a short prefix', () => {
     const out = filterCaptionsForTranscript([
       { speaker: 'Nivin Markose', text: 'No.', at },

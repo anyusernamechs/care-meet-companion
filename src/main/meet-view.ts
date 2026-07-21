@@ -3,7 +3,7 @@ import { installMeetNavigationMonitor } from './meet-session-monitor'
 import { isRecordingActive } from './recording-state'
 import { isAllowedExternalUrl, normalizeMeetUrl, normalizeExternalUrl } from './url-policy'
 
-export const SIDEBAR_WIDTH = 400
+export const SIDEBAR_WIDTH = 360
 export const FOCUS_RAIL_WIDTH = 44
 export const PANEL_SEPARATOR = 5
 
@@ -189,6 +189,12 @@ export function applySidebarLayout(mainWindow: BrowserWindow, expanded: boolean)
 }
 
 export function openMeetUrl(mainWindow: BrowserWindow, url: string): void {
+  mainWindow.setMinimumSize(SIDEBAR_WIDTH + PANEL_SEPARATOR + 640, 640)
+  const [width, height] = mainWindow.getSize()
+  if (width < 1180) {
+    mainWindow.setSize(1280, Math.max(height, 760), true)
+    mainWindow.center()
+  }
   const view = ensureMeetView(mainWindow)
   const target = normalizeMeetUrl(url)
   void view.webContents.loadURL(target)
@@ -196,6 +202,19 @@ export function openMeetUrl(mainWindow: BrowserWindow, url: string): void {
 
 export function openMeetInBrowser(url: string): void {
   void shell.openExternal(normalizeExternalUrl(url))
+}
+
+export function closeMeetView(mainWindow: BrowserWindow): void {
+  const view = getMeetView()
+  if (view) {
+    detachMeetView(mainWindow)
+    if (!view.webContents.isDestroyed()) view.webContents.close()
+    meetView = null
+  }
+  setSidebarExpanded(true)
+  mainWindow.setMinimumSize(640, 640)
+  mainWindow.setSize(760, 820, true)
+  mainWindow.center()
 }
 
 export function prepareMeetForRecording(mainWindow: BrowserWindow): boolean {
@@ -222,5 +241,27 @@ export function getMeetStatus(): { open: boolean; url: string; title: string; re
     url: view.webContents.getURL(),
     title: view.webContents.getTitle(),
     ready: !view.webContents.isLoading()
+  }
+}
+
+export async function getMeetAccountEmail(): Promise<string | undefined> {
+  const view = getMeetView()
+  if (!view || view.webContents.isDestroyed() || view.webContents.isLoading()) return undefined
+
+  try {
+    return await view.webContents.executeJavaScript(`(() => {
+      const nodes = Array.from(document.querySelectorAll(
+        '[aria-label*="Google Account" i], [aria-label*="Google account" i], [title*="Google Account" i]'
+      ));
+      for (const node of nodes) {
+        const text = [node.getAttribute('aria-label'), node.getAttribute('title'), node.textContent]
+          .filter(Boolean).join(' ');
+        const email = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i)?.[0];
+        if (email) return email.toLowerCase();
+      }
+      return undefined;
+    })()`, true) as string | undefined
+  } catch {
+    return undefined
   }
 }

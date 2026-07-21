@@ -4,7 +4,7 @@ import type { AppConfig } from '../../shared/types'
 import { log } from '../logger'
 import { getAuthorizedClient } from './google-auth'
 
-export { getAuthStatus, startGoogleAuth } from './google-auth'
+export { getAuthStatus, signOutGoogle, startGoogleAuth } from './google-auth'
 
 const UPLOAD_MARKER = '.care-meet-companion-upload-marker'
 const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder'

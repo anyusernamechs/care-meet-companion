@@ -30,6 +30,7 @@ export interface CalendarMeeting {
   meetingCode?: string
   organizerEmail?: string
   organizerName?: string
+  attendeeNames?: string[]
   isActive: boolean
   isUpcoming: boolean
 }
@@ -40,6 +41,8 @@ export interface RecordingSession {
   startedAt: string
   status: RecordingStatus
   hostEmail?: string
+  hostDisplayName?: string
+  participantNames?: string[]
   calendarEventId?: string
   hangoutLink?: string
   meetingCode?: string
@@ -48,6 +51,8 @@ export interface RecordingSession {
   localTranscriptPath?: string
   driveVideoFileId?: string
   driveTranscriptFileId?: string
+  driveFolderId?: string
+  driveFolderLabel?: string
   error?: string
 }
 
@@ -106,9 +111,12 @@ export interface StartProcessingPayload {
   startedAt: string
   mode?: SessionMode
   hostEmail?: string
+  hostDisplayName?: string
+  participantNames?: string[]
   calendarEventId?: string
   hangoutLink?: string
   meetingCode?: string
+  driveDestination?: DriveDestination | null
 }
 
 export interface MeetCallEndedEvent {
@@ -143,6 +151,7 @@ export interface CareRecorderAPI {
       recordingsDirLocked: boolean
     }
   >
+  getStorageStatus: () => Promise<{ availableBytes: number; totalBytes: number; path: string }>
   chooseRecordingsDir: () => Promise<string | null>
   getCaptureSources: () => Promise<CaptureSource[]>
   setCaptureMode: (mode: CaptureMode) => Promise<void>
@@ -151,6 +160,8 @@ export interface CareRecorderAPI {
   openMeet: (url: string) => Promise<MeetStatus>
   openMeetInBrowser: (url: string) => Promise<void>
   getMeetStatus: () => Promise<MeetStatus>
+  closeMeet: () => Promise<void>
+  getMeetAccountEmail: () => Promise<string | undefined>
   getMeetCaptionStatus: () => Promise<{
     on: boolean
     regionFound: boolean
@@ -170,7 +181,8 @@ export interface CareRecorderAPI {
   openMicrophoneSettings: () => Promise<void>
   resetMicrophonePermissions: () => Promise<void>
   startGoogleAuth: () => Promise<{ success: boolean; email?: string; error?: string }>
-  getAuthStatus: () => Promise<{ authenticated: boolean; email?: string }>
+  signOutGoogle: () => Promise<void>
+  getAuthStatus: () => Promise<{ authenticated: boolean; email?: string; name?: string }>
   getDriveDestination: () => Promise<DriveDestination | null>
   setDriveDestination: (destination: DriveDestination) => Promise<DriveDestination>
   clearDriveDestination: () => Promise<void>
@@ -192,6 +204,8 @@ export interface CareRecorderAPI {
   checkForUpdates: () => Promise<AppUpdateEvent>
   installAppUpdate: () => Promise<{ installed: boolean }>
   onAppUpdate: (callback: (event: AppUpdateEvent) => void) => () => void
+  hideToTray: () => Promise<{ hidden: boolean; reason?: string }>
+  showWindow: () => Promise<void>
 }
 
 declare global {
