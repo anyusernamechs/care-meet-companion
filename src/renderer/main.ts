@@ -87,6 +87,8 @@ const statusChipDrive = document.getElementById('status-chip-drive') as HTMLElem
 const appUpdateBar = document.getElementById('app-update-bar') as HTMLElement
 const appUpdateText = document.getElementById('app-update-text') as HTMLParagraphElement
 const appUpdateAction = document.getElementById('app-update-action') as HTMLButtonElement
+const updateStatus = document.getElementById('update-status') as HTMLParagraphElement
+const checkUpdatesButton = document.getElementById('check-updates-button') as HTMLButtonElement
 const settingsFoldSummary = document.getElementById('settings-fold-summary') as HTMLSpanElement
 const meetingDetails = document.getElementById('meeting-details') as HTMLElement
 const settingsDetails = document.getElementById('settings-details') as HTMLDetailsElement
@@ -501,33 +503,59 @@ async function updateAppStatusBar(): Promise<void> {
 }
 
 function showAppUpdate(event: AppUpdateEvent): void {
-  if (event.status === 'checking' || event.status === 'not-available' || event.status === 'error') {
-    if (event.status === 'error') {
-      logUpdateError(event.message)
+  const version = event.version?.trim()
+
+  if (updateStatus) {
+    if (event.status === 'checking') {
+      updateStatus.textContent = 'Checking for updates…'
+    } else if (event.status === 'available') {
+      updateStatus.textContent = `Version ${version} is available and downloading…`
+    } else if (event.status === 'downloading') {
+      updateStatus.textContent = `Downloading version ${version}…`
+    } else if (event.status === 'downloaded') {
+      updateStatus.textContent = `Version ${version} is ready — restart to install.`
+    } else if (event.status === 'error') {
+      updateStatus.textContent = event.message || 'Could not check for updates.'
+    } else {
+      updateStatus.textContent = `You're on the latest version${version ? ` (v${version})` : ''}.`
+    }
+  }
+
+  if (event.status === 'checking' || event.status === 'not-available') {
+    if (event.status === 'not-available') {
+      // Keep a ready-to-install banner if a download already finished.
+      if (!appUpdateAction.classList.contains('hidden') && !appUpdateBar.classList.contains('hidden')) {
+        return
+      }
+      appUpdateBar.classList.add('hidden')
+      appUpdateAction.classList.add('hidden')
     }
     return
   }
 
-  appUpdateBar.classList.remove('hidden')
+  if (event.status === 'error') {
+    appUpdateBar.classList.remove('hidden')
+    appUpdateBar.classList.add('is-error')
+    appUpdateText.textContent = event.message || 'Could not check for updates.'
+    appUpdateAction.classList.add('hidden')
+    return
+  }
+
+  appUpdateBar.classList.remove('hidden', 'is-error')
 
   if (event.status === 'available' || event.status === 'downloading') {
     appUpdateText.textContent =
       event.status === 'downloading'
-        ? `Downloading update v${event.version ?? ''}…`
-        : `Update v${event.version ?? ''} available — downloading in the background`
+        ? `Downloading update v${version}…`
+        : `New version available: v${version}`
     appUpdateAction.classList.add('hidden')
     return
   }
 
   if (event.status === 'downloaded') {
-    appUpdateText.textContent = `Update v${event.version ?? ''} is ready`
+    appUpdateText.textContent = `Update v${version} is ready to install`
     appUpdateAction.classList.remove('hidden')
   }
-}
-
-function logUpdateError(message?: string): void {
-  if (!message) return
-  console.warn('[care:update]', message)
 }
 
 function subscribeAppUpdates(): void {
@@ -1848,6 +1876,16 @@ meetingClearDriveFolderButton.addEventListener('click', () => {
 
 appUpdateAction.addEventListener('click', () => {
   void window.careRecorder.installAppUpdate()
+})
+
+checkUpdatesButton.addEventListener('click', () => {
+  void (async () => {
+    checkUpdatesButton.disabled = true
+    updateStatus.textContent = 'Checking for updates…'
+    const result = await window.careRecorder.checkForUpdates()
+    showAppUpdate(result)
+    checkUpdatesButton.disabled = false
+  })()
 })
 
 async function bootstrap(): Promise<void> {

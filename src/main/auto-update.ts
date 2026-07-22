@@ -3,11 +3,18 @@ import { autoUpdater } from 'electron-updater'
 import { getMainWindow } from './app-window'
 import { log } from './logger'
 import { trustedHandler } from './ipc-guard'
+import { showDesktopNotification } from './tray'
 import type { AppUpdateEvent } from '../shared/types'
 
 let updateDownloaded = false
+let pendingVersion = ''
+let lastEvent: AppUpdateEvent = { status: 'not-available' }
+let notifiedAvailable = false
+let notifiedDownloaded = false
 
 function sendUpdateEvent(payload: AppUpdateEvent): void {
+  lastEvent = payload
+  if (payload.version) pendingVersion = payload.version
   const window = getMainWindow()
   if (!window || window.isDestroyed()) return
   window.webContents.send('care:app-update', payload)
@@ -20,7 +27,14 @@ function configureUpdater(): void {
 
   const token = process.env.CARE_GITHUB_UPDATE_TOKEN?.trim()
   if (token) {
+    // Required for private GitHub release repos.
     autoUpdater.requestHeaders = { Authorization: `token ${token}` }
+    log.info('auto-update', 'GitHub update token configured')
+  } else {
+    log.warn(
+      'auto-update',
+      'CARE_GITHUB_UPDATE_TOKEN is not set. Private-repo update checks may fail.'
+    )
   }
 
   autoUpdater.logger = {
@@ -33,50 +47,100 @@ function configureUpdater(): void {
 
 function registerUpdaterEvents(): void {
   autoUpdater.on('checking-for-update', () => {
-    sendUpdateEvent({ status: 'checking' })
+    sendUpdateEvent({ status: 'checking', version: app.getVersion() })
   })
 
   autoUpdater.on('update-available', (info) => {
+    pendingVersion = info.version
     sendUpdateEvent({ status: 'available', version: info.version })
+    if (!notifiedAvailable) {
+      notifiedAvailable = true
+      showDesktopNotification(
+        'Update available',
+        `CARE Meet Companion ${info.version} is downloading.`
+      )
+    }
   })
 
   autoUpdater.on('update-not-available', () => {
+    if (updateDownloaded) {
+      sendUpdateEvent({ status: 'downloaded', version: pendingVersion || app.getVersion() })
+      return
+    }
     sendUpdateEvent({ status: 'not-available', version: app.getVersion() })
   })
 
   autoUpdater.on('error', (error) => {
     log.error('auto-update', 'Update check failed', error)
+    const message = error instanceof Error ? error.message : String(error)
+    const privateHint =
+      /401|403|404|private|bad credentials|not found/i.test(message) &&
+      !process.env.CARE_GITHUB_UPDATE_TOKEN?.trim()
+        ? ' Update feed may be private — ask IT to include CARE_GITHUB_UPDATE_TOKEN in the installer.'
+        : ''
     sendUpdateEvent({
       status: 'error',
-      message: error instanceof Error ? error.message : String(error)
+      version: app.getVersion(),
+      message: `${message}${privateHint}`
     })
   })
 
   autoUpdater.on('download-progress', () => {
-    sendUpdateEvent({ status: 'downloading' })
+    sendUpdateEvent({
+      status: 'downloading',
+      version: pendingVersion || app.getVersion()
+    })
   })
 
   autoUpdater.on('update-downloaded', (info) => {
     updateDownloaded = true
+    pendingVersion = info.version
     sendUpdateEvent({ status: 'downloaded', version: info.version })
+    if (!notifiedDownloaded) {
+      notifiedDownloaded = true
+      showDesktopNotification(
+        'Update ready',
+        `CARE Meet Companion ${info.version} is ready. Restart to install.`
+      )
+    }
   })
 }
 
 async function checkForUpdates(): Promise<AppUpdateEvent> {
   if (!app.isPackaged) {
-    return { status: 'not-available', version: app.getVersion() }
+    const event: AppUpdateEvent = {
+      status: 'not-available',
+      version: app.getVersion(),
+      message: 'Updates are only checked in installed builds.'
+    }
+    sendUpdateEvent(event)
+    return event
   }
 
   try {
     const result = await autoUpdater.checkForUpdates()
-    if (result?.updateInfo?.version && result.updateInfo.version !== app.getVersion()) {
-      return { status: 'available', version: result.updateInfo.version }
+    if (updateDownloaded) {
+      const event: AppUpdateEvent = {
+        status: 'downloaded',
+        version: pendingVersion || result?.updateInfo?.version || app.getVersion()
+      }
+      sendUpdateEvent(event)
+      return event
     }
-    return { status: 'not-available', version: app.getVersion() }
+    if (result?.updateInfo?.version && result.updateInfo.version !== app.getVersion()) {
+      const event: AppUpdateEvent = { status: 'available', version: result.updateInfo.version }
+      sendUpdateEvent(event)
+      return event
+    }
+    const event: AppUpdateEvent = { status: 'not-available', version: app.getVersion() }
+    sendUpdateEvent(event)
+    return event
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     log.error('auto-update', 'Manual update check failed', error)
-    return { status: 'error', message }
+    const event: AppUpdateEvent = { status: 'error', version: app.getVersion(), message }
+    sendUpdateEvent(event)
+    return event
   }
 }
 
@@ -101,10 +165,7 @@ export function registerAutoUpdateHandlers(): void {
   ipcMain.on('care:subscribe-app-update', (event) => {
     const window = getMainWindow()
     if (!window || event.sender !== window.webContents) return
-    sendUpdateEvent({
-      status: updateDownloaded ? 'downloaded' : 'not-available',
-      version: app.getVersion()
-    })
+    event.sender.send('care:app-update', lastEvent)
   })
 }
 
@@ -120,6 +181,7 @@ export function initAutoUpdates(): void {
     })
   }
 
-  setTimeout(check, 12_000)
+  // First check soon after launch so users see the banner quickly.
+  setTimeout(check, 5_000)
   setInterval(check, 4 * 60 * 60 * 1000)
 }

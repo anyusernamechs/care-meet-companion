@@ -32,6 +32,13 @@
         </div>
       </header>
 
+      <div id="app-update-bar" class="app-update-bar hidden" role="status" aria-live="polite">
+        <p id="app-update-text" class="app-update-text"></p>
+        <button id="app-update-action" type="button" class="secondary compact hidden">
+          Restart to update
+        </button>
+      </div>
+
       <nav class="section-tabs" aria-label="Companion navigation">
         <button id="primary-tab-button" type="button" class="section-tab active" aria-selected="true">Meetings</button>
         <button id="settings-tab-button" type="button" class="section-tab" aria-selected="false">Settings</button>
@@ -260,6 +267,19 @@
                 <button id="clear-drive-folder-button" type="button" class="link-button hidden">Remove</button>
               </div>
             </div>
+
+            <div class="settings-block settings-row">
+              <p class="settings-block-title">App updates</p>
+              <div class="settings-value-stack">
+                <p id="update-status" class="settings-block-value">Checking for updates…</p>
+                <p class="hint">Installed apps check automatically and show a banner when a new version is ready.</p>
+              </div>
+              <div class="settings-actions">
+                <button id="check-updates-button" type="button" class="secondary compact">
+                  Check now
+                </button>
+              </div>
+            </div>
           </div>
         </details>
       </main>
@@ -279,13 +299,6 @@
           </button>
         </div>
       </section>
-
-      <div id="app-update-bar" class="app-update-bar hidden" role="status" aria-live="polite">
-        <p id="app-update-text" class="app-update-text"></p>
-        <button id="app-update-action" type="button" class="secondary compact hidden">
-          Restart to update
-        </button>
-      </div>
 
       <footer class="app-status-bar">
         <div class="status-chips" aria-hidden="true">
