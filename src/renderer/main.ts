@@ -761,6 +761,58 @@ function updateSourcePreview(source?: CaptureSource): void {
   void window.careRecorder.setCaptureSource(source.id)
 }
 
+function renderUpcomingMeetings(focusMeeting: CalendarMeeting | null): void {
+  calendarMeetingList.replaceChildren()
+  const upcoming = focusMeeting
+    ? calendarMeetings.filter((item) => item.id !== focusMeeting.id)
+    : calendarMeetings
+
+  if (!hostEmail) {
+    calendarMeetingList.innerHTML =
+      '<p class="meeting-empty">No meetings loaded. Connect your Google account in Settings.</p>'
+    calendarStatus.textContent = 'Sign in from Settings to load your calendar'
+    return
+  }
+
+  if (calendarMeetings.length === 0) {
+    calendarMeetingList.innerHTML =
+      '<p class="meeting-empty">Nothing upcoming. You can still open Meet and start a session.</p>'
+    calendarStatus.textContent = 'No Google Meet events in the next 24 hours'
+    return
+  }
+
+  if (upcoming.length === 0) {
+    calendarMeetingList.innerHTML = '<p class="meeting-empty">No other upcoming meetings.</p>'
+    calendarStatus.textContent = 'No other meetings in the next 24 hours'
+    return
+  }
+
+  calendarStatus.textContent = `${upcoming.length} more upcoming`
+  for (const meeting of upcoming) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'meeting-event'
+    button.dataset.meetingId = meeting.id
+    button.setAttribute('aria-pressed', 'false')
+    const title = document.createElement('span')
+    title.className = 'meeting-event-title'
+    title.textContent = meeting.title
+    const meta = document.createElement('span')
+    meta.className = 'meeting-event-meta'
+    meta.textContent = formatMeetingTime(meeting)
+    button.append(title, meta)
+    calendarMeetingList.appendChild(button)
+  }
+}
+
+function selectCalendarMeeting(meeting: CalendarMeeting | null): void {
+  if (meeting) {
+    calendarMeetingSelect.value = meeting.id
+  }
+  applyCalendarMeeting(meeting)
+  renderUpcomingMeetings(meeting)
+}
+
 function applyCalendarMeeting(meeting: CalendarMeeting | null): void {
   selectedCalendarMeeting = meeting
   const canUseSelection = Boolean(meeting) && uiState === 'idle'
@@ -775,15 +827,20 @@ function applyCalendarMeeting(meeting: CalendarMeeting | null): void {
 
   if (!meeting) {
     heroMeetingBadge.classList.add('hidden')
-    heroMeetingTitle.textContent = hostEmail ? 'Choose a meeting below' : 'Connect Google to see your meetings'
-    heroMeetingTime.textContent = hostEmail ? 'Nothing is selected yet' : 'Your calendar meetings will appear here'
+    heroMeetingBadge.classList.remove('is-next')
+    heroMeetingTitle.textContent = hostEmail ? 'No meeting selected' : 'Sign in to continue'
+    heroMeetingTime.textContent = hostEmail
+      ? 'Pick an upcoming meeting or open Meet directly'
+      : 'Connect Google to load your calendar'
     heroMeetingLink.textContent = ''
     updateFoldSummaries()
     return
   }
 
   meetingTitleInput.value = meeting.title
-  heroMeetingBadge.classList.toggle('hidden', !meeting.isActive)
+  heroMeetingBadge.textContent = meeting.isActive ? 'Now' : 'Next'
+  heroMeetingBadge.classList.toggle('is-next', !meeting.isActive)
+  heroMeetingBadge.classList.remove('hidden')
   heroMeetingTitle.textContent = meeting.title
   heroMeetingTime.textContent = formatHeroMeetingTime(meeting)
   heroMeetingLink.textContent = meeting.hangoutLink
@@ -796,25 +853,25 @@ function applyCalendarMeeting(meeting: CalendarMeeting | null): void {
 
 function renderCalendarMeetings(): void {
   calendarMeetingSelect.innerHTML = ''
-  calendarMeetingList.replaceChildren()
 
   if (!hostEmail) {
     calendarMeetingSelect.innerHTML = '<option value="">Connect Google to see your meetings</option>'
-    calendarStatus.textContent = 'Sign in to load your personal calendar'
-    calendarMeetingList.innerHTML = '<p class="meeting-empty">Connect your Google account to see upcoming meetings.</p>'
     applyCalendarMeeting(null)
+    renderUpcomingMeetings(null)
     return
   }
 
   if (calendarMeetings.length === 0) {
     calendarMeetingSelect.innerHTML = '<option value="">No Meet events in the next 24 hours</option>'
-    calendarStatus.textContent = 'No Google Meet events in the next 24 hours'
-    calendarMeetingList.innerHTML = '<p class="meeting-empty">No upcoming meetings. You can create one directly in Meet.</p>'
     applyCalendarMeeting(null)
+    renderUpcomingMeetings(null)
     return
   }
 
-  calendarStatus.textContent = `${calendarMeetings.length} meeting(s) — switch below if needed`
+  const preferred =
+    selectedCalendarMeeting && calendarMeetings.some((item) => item.id === selectedCalendarMeeting?.id)
+      ? selectedCalendarMeeting
+      : calendarMeetings.find((item) => item.isActive) || calendarMeetings[0]
 
   for (const meeting of calendarMeetings) {
     const option = document.createElement('option')
@@ -822,24 +879,9 @@ function renderCalendarMeetings(): void {
     const prefix = meeting.isActive ? 'Now' : 'Next'
     option.textContent = `${prefix}: ${meeting.title} (${formatMeetingTime(meeting)})`
     calendarMeetingSelect.appendChild(option)
-
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'meeting-event'
-    button.dataset.meetingId = meeting.id
-    button.setAttribute('aria-pressed', 'false')
-    const title = document.createElement('span')
-    title.className = 'meeting-event-title'
-    title.textContent = meeting.title
-    const meta = document.createElement('span')
-    meta.className = 'meeting-event-meta'
-    meta.textContent = `${meeting.isActive ? 'Happening now' : 'Upcoming'} · ${formatMeetingTime(meeting)}`
-    button.append(title, meta)
-    calendarMeetingList.appendChild(button)
   }
 
-  calendarMeetingSelect.value = ''
-  applyCalendarMeeting(null)
+  selectCalendarMeeting(preferred)
 }
 
 async function refreshMeetStatus(): Promise<void> {
@@ -879,8 +921,8 @@ async function refreshMeetStatus(): Promise<void> {
       selectedCalendarMeeting = null
       calendarMeetingSelect.value = ''
       meetingTitleInput.value = `Meet ${detectedCode}`
-      heroMeetingBadge.classList.remove('hidden')
-      heroMeetingBadge.textContent = 'Meeting detected'
+      heroMeetingBadge.classList.remove('hidden', 'is-next')
+      heroMeetingBadge.textContent = 'Live'
       heroMeetingTitle.textContent = status.title && !/^google meet$/i.test(status.title)
         ? status.title
         : `Meet ${detectedCode}`
@@ -967,15 +1009,17 @@ async function refreshDriveDestination(
     driveDestinationHint.textContent = 'Each session gets its own subfolder here.'
     meetingDriveDestinationHint.textContent = 'Verified — this meeting will upload here after processing.'
     chooseDriveFolderButton.textContent = 'Change'
+    meetingChooseDriveFolderButton.textContent = 'Change'
     clearDriveFolderButton.classList.remove('hidden')
     meetingClearDriveFolderButton.classList.remove('hidden')
   } else {
     driveFolderLabel.textContent = 'Not selected'
-    meetingDriveFolderLabel.textContent = 'Not selected'
+    meetingDriveFolderLabel.textContent = 'Local only'
     driveDestinationHint.textContent = 'Optional — uploads after each session.'
+    meetingDriveDestinationHint.textContent = 'Optional Drive folder for this session.'
     chooseDriveFolderButton.textContent = 'Browse Google Drive…'
+    meetingChooseDriveFolderButton.textContent = 'Choose folder'
     clearDriveFolderButton.classList.add('hidden')
-    void refreshDriveDestination(null)
     meetingClearDriveFolderButton.classList.add('hidden')
   }
 
@@ -1723,7 +1767,7 @@ sourceSelect.addEventListener('change', () => {
 
 calendarMeetingSelect.addEventListener('change', () => {
   const meeting = calendarMeetings.find((item) => item.id === calendarMeetingSelect.value) || null
-  applyCalendarMeeting(meeting)
+  selectCalendarMeeting(meeting)
 })
 
 openMeetButton.addEventListener('click', () => {
@@ -1825,12 +1869,7 @@ calendarMeetingList.addEventListener('click', (event) => {
   if (!button) return
   const meeting = calendarMeetings.find((item) => item.id === button.dataset.meetingId) || null
   if (!meeting) return
-  calendarMeetingSelect.value = meeting.id
-  for (const item of calendarMeetingList.querySelectorAll('.meeting-event')) {
-    item.classList.toggle('selected', item === button)
-    item.setAttribute('aria-pressed', String(item === button))
-  }
-  applyCalendarMeeting(meeting)
+  selectCalendarMeeting(meeting)
 })
 
 errorOpenFolderButton.addEventListener('click', () => {

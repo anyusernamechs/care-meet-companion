@@ -1,6 +1,6 @@
 {
   "name": "care-meet-companion",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "CARE Meet Companion — host-side Google Meet recording app",
   "main": "out/main/index.js",
   "author": "CARE",

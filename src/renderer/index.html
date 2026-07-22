@@ -164,26 +164,32 @@
           </details>
         </section>
 
-        <section class="workspace meeting-workspace meeting-card" id="meeting-details">
-          <header class="workspace-header">
-            <div>
-              <p class="workspace-kicker">Today</p>
-              <h2 class="workspace-title">Meetings</h2>
-            </div>
+        <section class="card meeting-card workspace meeting-workspace" id="meeting-details">
+          <header class="workspace-toolbar">
+            <h2 class="workspace-title">Meetings</h2>
             <button id="refresh-calendar-button" type="button" class="ghost compact" disabled>
               Refresh
             </button>
           </header>
 
-          <div class="selected-meeting-bar" id="hero-meeting">
-            <div class="selected-meeting-copy">
-              <p id="hero-meeting-badge" class="hero-badge hidden">Live now</p>
-              <h3 id="hero-meeting-title" class="hero-title">Select a meeting</h3>
-              <p id="hero-meeting-time" class="hero-meta"></p>
-              <p id="hero-meeting-link" class="hero-link"></p>
+          <div class="focus-meeting" id="hero-meeting">
+            <div class="focus-meeting-main">
+              <p id="hero-meeting-badge" class="focus-badge hidden">Now</p>
+              <h3 id="hero-meeting-title" class="focus-title">Select a meeting</h3>
+              <p id="hero-meeting-time" class="focus-meta"></p>
+              <p id="hero-meeting-link" class="focus-link"></p>
             </div>
-            <button id="open-meet-button" type="button" class="primary" disabled>Open meeting</button>
+            <div class="focus-meeting-actions">
+              <button id="open-meet-button" type="button" class="primary" disabled>Open meeting</button>
+              <div class="focus-secondary">
+                <button id="open-meet-browser-button" type="button" class="ghost compact" disabled>
+                  Browser
+                </button>
+                <button id="copy-meet-link-button" type="button" class="ghost compact" disabled>Copy link</button>
+              </div>
+            </div>
           </div>
+          <p id="meet-status" class="hint focus-hint">Meet opens beside this panel.</p>
 
           <label class="label sr-only" for="calendar-meeting-select">Switch meeting</label>
           <select id="calendar-meeting-select" class="meeting-switcher sr-only" disabled>
@@ -191,19 +197,17 @@
           </select>
 
           <div class="meeting-list-panel">
-            <div class="meeting-table-head" aria-hidden="true">
-              <span>Meeting</span><span>When</span>
-            </div>
+            <div class="list-section-label">Upcoming</div>
             <div id="calendar-meeting-list" class="meeting-event-list" aria-label="Upcoming meetings"></div>
             <p id="calendar-status" class="hint"></p>
           </div>
 
-          <div class="meeting-destination">
-            <div>
-              <p class="settings-block-title">Google Drive folder</p>
-              <p id="meeting-drive-folder-label" class="settings-block-value">Not selected</p>
+          <div class="session-save-row" id="meeting-destination">
+            <div class="session-save-copy">
+              <p class="session-save-label">Session save</p>
+              <p id="meeting-drive-folder-label" class="session-save-value">Local only</p>
               <p id="meeting-drive-destination-hint" class="hint">
-                Optional. Uploads go into a session folder inside this one.
+                Optional Drive folder for this session.
               </p>
             </div>
             <div class="settings-actions">
@@ -213,14 +217,6 @@
               <button id="meeting-clear-drive-folder-button" type="button" class="link-button hidden">Remove</button>
             </div>
           </div>
-
-          <div class="workspace-secondary-actions">
-            <button id="open-meet-browser-button" type="button" class="secondary compact" disabled>
-              Open in browser
-            </button>
-            <button id="copy-meet-link-button" type="button" class="secondary compact" disabled>Copy link</button>
-          </div>
-          <p id="meet-status" class="hint">Meet opens beside this panel.</p>
         </section>
 
         <details class="card panel-card" id="settings-details">
@@ -301,9 +297,9 @@
       </section>
 
       <footer class="app-status-bar">
-        <div class="status-chips" aria-hidden="true">
+        <div class="status-chips">
           <span id="status-chip-account" class="status-chip">Account</span>
-          <span id="status-chip-drive" class="status-chip">Drive</span>
+          <span id="status-chip-drive" class="status-chip">Local save</span>
         </div>
         <p id="app-status-bar-text">Checking status...</p>
       </footer>
