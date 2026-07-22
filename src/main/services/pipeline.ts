@@ -1,4 +1,4 @@
-import { createWriteStream, existsSync, mkdirSync, statSync, unlinkSync, writeFileSync, type WriteStream } from 'fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync, type WriteStream } from 'fs'
 import { join } from 'path'
 import { getSessionDir, loadConfig } from '../config'
 import { assertRegisteredSession, unregisterSession } from '../session-registry'
@@ -12,12 +12,16 @@ import {
 import { generateTranscript } from './whisper'
 import { fetchMeetArtifacts } from './meet-artifacts'
 import {
-  captionsIncludeSpeakerNames,
   formatMeetCaptionTranscript,
   hasUsableMeetCaptions,
   loadMeetCaptions,
   stopMeetCaptionCapture
 } from '../meet-captions'
+import {
+  labelTranscriptWithSpeakers,
+  loadMeetSpeakers,
+  stopMeetSpeakerCapture
+} from '../meet-speakers'
 import { ensureDriveSessionFolder, uploadFileToDrive } from './drive'
 import { saveRecordingMetadata } from './firestore'
 import type { ProcessingResult, RecordingSession, StartProcessingPayload } from '../../shared/types'
@@ -202,42 +206,51 @@ export async function processRecording(
     await convertWebmToMp4(config, paths.webm, paths.mp4)
 
     await stopMeetCaptionCapture()
-    const captionLines = loadMeetCaptions(sessionDir)
+    await stopMeetSpeakerCapture()
     const sourceMedia = await probeMediaFile(config, paths.webm)
-    onProgress('Checking for an official Google Meet transcript...')
-    const meetArtifacts = await fetchMeetArtifacts(config, payload.meetingCode)
-    const captionsWithNames =
-      hasUsableMeetCaptions(captionLines) && captionsIncludeSpeakerNames(captionLines)
+    onProgress('Checking for a Google Meet transcript...')
+    const meetArtifacts = await fetchMeetArtifacts(config, payload.meetingCode).catch(() => null)
+    const speakerStore = loadMeetSpeakers(sessionDir)
 
-    if (meetArtifacts?.transcript) {
-      onProgress('Saving the official transcript with participant names...')
+    // Prefer Meet REST API transcript when available (includes speaker names).
+    // Else Whisper + Meet UI active-speaker dots for best-effort name labels.
+    // Skip live Meet CC for video sessions — progressive captions were fragmenty.
+    if (meetArtifacts?.transcript?.trim()) {
+      onProgress('Saving Google Meet transcript with speaker names...')
       writeFileSync(paths.transcript, meetArtifacts.transcript, 'utf8')
-    } else if (captionsWithNames) {
-      onProgress('Saving transcript with participant names...')
-      writeFileSync(paths.transcript, formatMeetCaptionTranscript(captionLines), 'utf8')
-    } else if (sourceMedia.hasAudio) {
+    } else if (sourceMedia.hasAudio && config.whisperEnabled) {
       onProgress('Writing the transcript...')
       const recordingMs = Date.now() - new Date(payload.startedAt).getTime()
       if (recordingMs > 45 * 60 * 1000) {
         onProgress('Writing the transcript… this may take several minutes for long meetings.')
       }
       await extractAudioWav(config, paths.webm, paths.wav)
-      const localTranscript = await generateTranscript(config, paths.wav, paths.transcript)
+      const whisperResult = await generateTranscript(config, paths.wav, paths.transcript)
+      let body = whisperResult.text
+      if (whisperResult.srtPath && speakerStore.segments.length) {
+        onProgress('Adding speaker names from Meet video tiles...')
+        const srt = readFileSync(whisperResult.srtPath, 'utf8')
+        body = labelTranscriptWithSpeakers(srt, whisperResult.text, speakerStore, payload.startedAt)
+      }
       const host = payload.hostDisplayName || payload.hostEmail || 'Meeting host'
       const participants = [
+        ...speakerStore.roster,
         ...(meetArtifacts?.participantNames || []),
         ...(payload.participantNames || [])
       ]
         .filter((name) => name && name.toLowerCase() !== host.toLowerCase())
         .filter((name, index, all) => all.indexOf(name) === index)
+      const labelNote = speakerStore.segments.length
+        ? 'Speakers estimated from Meet video-tile activity (speaking indicator) + audio transcription.'
+        : 'Transcribed from meeting audio (Whisper). Speaker labels unavailable for this session.'
       const identityHeader = [
         'Meeting transcript',
         '',
         `Host: ${host}`,
         participants.length ? `Participants: ${participants.join(', ')}` : '',
-        'Speaker attribution was unavailable for this audio transcription; names are listed for context only.',
+        labelNote,
         '',
-        localTranscript
+        body
       ]
         .filter((line, index) => line !== '' || index === 1 || index >= 5)
         .join('\n')
@@ -245,7 +258,7 @@ export async function processRecording(
     } else {
       writeFileSync(
         paths.transcript,
-        'No transcript was captured. Turn on Meet CC during the meeting, or check that meeting audio is audible on your computer.',
+        'No transcript was created. Enable Meet transcription for speaker names, or ensure meeting audio is audible so Whisper can run.',
         'utf8'
       )
     }

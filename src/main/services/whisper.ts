@@ -8,11 +8,11 @@ export async function generateTranscript(
   wavPath: string,
   transcriptPath: string,
   onLog?: (line: string) => void
-): Promise<string> {
+): Promise<{ text: string; srtPath?: string }> {
   if (!config.whisperEnabled) {
     const placeholder = 'Transcript was not generated for this recording.'
     writeFileSync(transcriptPath, placeholder, 'utf8')
-    return placeholder
+    return { text: placeholder }
   }
 
   if (!existsSync(wavPath)) {
@@ -27,11 +27,23 @@ export async function generateTranscript(
       'Please reinstall CARE Meet Companion or contact your IT support team.'
     ].join('\n')
     writeFileSync(transcriptPath, placeholder, 'utf8')
-    return placeholder
+    return { text: placeholder }
   }
 
   const outputPrefix = join(dirname(transcriptPath), 'transcript')
-  const args = ['-m', modelPath, '-f', wavPath, '-otxt', '-of', outputPrefix, '-l', 'en']
+  const srtPath = `${outputPrefix}.srt`
+  const args = [
+    '-m',
+    modelPath,
+    '-f',
+    wavPath,
+    '-otxt',
+    '-osrt',
+    '-of',
+    outputPrefix,
+    '-l',
+    'en'
+  ]
 
   try {
     await runWhisper(config.whisperPath, args, onLog)
@@ -44,26 +56,34 @@ export async function generateTranscript(
       `Details for support: ${message}`
     ].join('\n')
     writeFileSync(transcriptPath, fallback, 'utf8')
-    return fallback
+    return { text: fallback }
   }
 
+  let text = ''
   if (existsSync(transcriptPath)) {
-    return readFileSync(transcriptPath, 'utf8')
+    text = readFileSync(transcriptPath, 'utf8')
+  } else {
+    const sidecar = `${wavPath}.txt`
+    if (existsSync(sidecar)) {
+      renameSync(sidecar, transcriptPath)
+      text = readFileSync(transcriptPath, 'utf8')
+    } else {
+      const prefixed = `${outputPrefix}.txt`
+      if (existsSync(prefixed)) {
+        renameSync(prefixed, transcriptPath)
+        text = readFileSync(transcriptPath, 'utf8')
+      }
+    }
   }
 
-  const sidecar = `${wavPath}.txt`
-  if (existsSync(sidecar)) {
-    renameSync(sidecar, transcriptPath)
-    return readFileSync(transcriptPath, 'utf8')
+  if (!text) {
+    throw new Error('Transcript file was not created.')
   }
 
-  const prefixed = `${outputPrefix}.txt`
-  if (existsSync(prefixed)) {
-    renameSync(prefixed, transcriptPath)
-    return readFileSync(transcriptPath, 'utf8')
+  return {
+    text,
+    srtPath: existsSync(srtPath) ? srtPath : undefined
   }
-
-  throw new Error('Transcript file was not created.')
 }
 
 function runWhisper(

@@ -16,6 +16,7 @@ import {
   setSelectedCaptureSource
 } from './capture'
 import { getMeetCaptionStatus, startMeetCaptionCapture } from './meet-captions'
+import { startMeetSpeakerCapture } from './meet-speakers'
 import { markMeetCallActive, onMeetCallEnded, resetMeetCallMonitor } from './meet-session-monitor'
 import {
   applySidebarLayout,
@@ -390,7 +391,13 @@ export function registerIpcHandlers(): void {
         ? beginNotesSession(folderName, config)
         : beginSession(folderName, config)
 
-      void startMeetCaptionCapture(folderName, folderPath)
+      // Live Meet CC is only needed for notes-only.
+      // Video recordings track active speakers from video-tile dots + Whisper.
+      if (notesOnly) {
+        void startMeetCaptionCapture(folderName, folderPath)
+      } else {
+        void startMeetSpeakerCapture(folderName, folderPath, payload.startedAt)
+      }
 
       return { folderName, folderPath }
     })

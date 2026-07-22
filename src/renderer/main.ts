@@ -450,7 +450,7 @@ function updateAfterPromise(): void {
   const notesOnly = getSessionMode() === 'notes-only'
   const items = notesOnly
     ? ['Save transcript with names', 'Upload to Google Drive']
-    : ['Save MP4', 'Create transcript', 'Upload to Google Drive']
+    : ['Save MP4', 'Transcribe + name speakers', 'Upload to Google Drive']
 
   if (!driveFolderSelected) {
     const uploadIndex = items.findIndex((item) => item.startsWith('Upload'))
@@ -615,11 +615,12 @@ const FRIENDLY_PROGRESS = new Set([
   'Stopping recording...',
   'Saving your notes...',
   'Saving your video...',
+  'Checking for a Google Meet transcript...',
+  'Saving Google Meet transcript with speaker names...',
   'Writing the transcript...',
   'Writing the transcript… this may take several minutes for long meetings.',
+  'Adding speaker names from Meet video tiles...',
   'Saving transcript with participant names...',
-  'Checking for an official Google Meet transcript...',
-  'Saving the official transcript with participant names...',
   'Creating Google Drive folder...',
   'Uploading to Google Drive...',
   'Uploading notes...',
@@ -685,8 +686,8 @@ function getSessionMode(): SessionMode {
 }
 
 function updateCaptionReminder(): void {
-  const show = getSessionMode() === 'notes-only' || captureMode === 'meet-tab'
-  captionReminder.classList.toggle('hidden', !show)
+  // Record mode uses Whisper; only notes-only still depends on Meet CC.
+  captionReminder.classList.toggle('hidden', getSessionMode() === 'notes-only')
 }
 
 function updateSessionModeUi(): void {
@@ -1474,7 +1475,7 @@ async function startSession(): Promise<void> {
     if (sessionMode === 'record') startStorageMonitor()
     subscribeMeetCallEnded()
     startSessionTimer()
-    if (sessionMode === 'notes-only' || captureMode === 'meet-tab') {
+    if (sessionMode === 'notes-only') {
       startCaptionHealthMonitor()
     }
   } catch (error) {

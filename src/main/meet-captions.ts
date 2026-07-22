@@ -190,7 +190,7 @@ function appendLines(lines: MeetCaptionLine[]): void {
   writeStore(store)
 }
 
-async function runInMeet<T>(runner: string, webContents?: WebContents): Promise<T | null> {
+export async function runInMeet<T>(runner: string, webContents?: WebContents): Promise<T | null> {
   const view = getMeetView()
   const target = webContents || view?.webContents
   if (!target || target.isDestroyed()) return null

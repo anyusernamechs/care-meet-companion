@@ -887,6 +887,235 @@
     return inCallUrl ? 'unknown' : 'left'
   }
 
+  /* --- Active speaker from video tiles (speaking-dots indicator) --- */
+  const speakerMonitor = {
+    monitoring: false,
+    segments: [],
+    currentSpeaker: '',
+    segmentStartedAt: '',
+    roster: new Set(),
+    pending: [],
+    quietTicks: 0
+  }
+
+  function looksLikePersonName(text) {
+    const t = normalize(text)
+    if (!t || t.length < 2 || t.length > 60) return false
+    if (/^(you|me)$/i.test(t)) return true
+    if (looksLikeIconLigature(t)) return false
+    if (
+      /^(mute|unmute|camera|mic|pin|more|options|present|share|leave|chat|people|captions?)$/i.test(t)
+    ) {
+      return false
+    }
+    if (/https?:|@|\.com\b/i.test(t)) return false
+    const words = t.split(/\s+/)
+    if (words.length > 5) return false
+    return /[A-Za-zÀ-ÖØ-öø-ÿ]/.test(t)
+  }
+
+  function resolveTileName(tile) {
+    const self = tile.querySelector('[data-self-name]')
+    if (self) {
+      const name = normalize(self.getAttribute('data-self-name') || self.textContent)
+      if (looksLikePersonName(name)) return /^you$/i.test(name) ? 'You' : name
+    }
+
+    const labeled = tile.querySelector('[data-participant-id], [data-requested-participant-id]')
+    if (labeled) {
+      const aria = normalize(labeled.getAttribute('aria-label') || '')
+      const fromAria = aria
+        .replace(/\b(muted|unmuted|camera off|camera on|pin|more options|presentation|presenting)\b/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+      if (looksLikePersonName(fromAria)) return fromAria
+    }
+
+    const aria = normalize(tile.getAttribute('aria-label') || '')
+    if (aria) {
+      const cleaned = aria
+        .replace(
+          /\b(muted|unmuted|camera off|camera on|pin|more options|presentation|presenting|speaking)\b/gi,
+          ''
+        )
+        .replace(/\s+/g, ' ')
+        .trim()
+      if (looksLikePersonName(cleaned)) return cleaned
+    }
+
+    const spans = tile.querySelectorAll('span, div')
+    for (const node of spans) {
+      if (node.children && node.children.length > 2) continue
+      const text = normalize(node.textContent)
+      if (!looksLikePersonName(text)) continue
+      const rect = node.getBoundingClientRect?.()
+      const tileRect = tile.getBoundingClientRect?.()
+      if (rect && tileRect && rect.top < tileRect.top + tileRect.height * 0.45) continue
+      return text
+    }
+    return ''
+  }
+
+  function isSpeakingDotsIndicator(node) {
+    if (!node || node.nodeType !== 1) return false
+    const kids = Array.from(node.children || [])
+    if (kids.length < 3 || kids.length > 5) return false
+
+    let smallSimilar = 0
+    for (const kid of kids) {
+      const rect = kid.getBoundingClientRect?.()
+      if (!rect) continue
+      if (rect.width >= 2 && rect.width <= 14 && rect.height >= 2 && rect.height <= 14) {
+        smallSimilar += 1
+      }
+    }
+    if (smallSimilar < 3) return false
+
+    const rect = node.getBoundingClientRect?.()
+    if (rect && (rect.width > 90 || rect.height > 36 || rect.width < 18)) return false
+    return true
+  }
+
+  function tileHasSpeakingDots(tile) {
+    const nodes = tile.querySelectorAll('div, span')
+    for (const node of nodes) {
+      if (!isSpeakingDotsIndicator(node)) continue
+      const style = window.getComputedStyle?.(node)
+      if (
+        style &&
+        (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0)
+      ) {
+        continue
+      }
+      const rect = node.getBoundingClientRect?.()
+      if (!rect || rect.width < 1 || rect.height < 1) continue
+      return true
+    }
+    return false
+  }
+
+  function tileLooksActiveSpeaker(tile) {
+    const aria = `${tile.getAttribute('aria-label') || ''} ${tile.getAttribute('data-tooltip') || ''}`
+    if (/\bspeaking\b/i.test(aria)) return true
+    if (tileHasSpeakingDots(tile)) return true
+    try {
+      const style = window.getComputedStyle?.(tile)
+      if (style) {
+        const outline = style.outlineWidth || ''
+        const outlineStyle = style.outlineStyle || ''
+        if (outlineStyle !== 'none' && parseFloat(outline) >= 2) return true
+      }
+    } catch {
+      /* ignore */
+    }
+    return false
+  }
+
+  function collectParticipantTiles() {
+    const found = []
+    const seen = new Set()
+    const candidates = document.querySelectorAll(
+      '[data-participant-id], [data-requested-participant-id], [data-self-name], [data-allocation-index]'
+    )
+    for (const node of candidates) {
+      let tile = node
+      for (let i = 0; i < 6 && tile.parentElement; i++) {
+        if (tile.querySelector('video, [data-self-name]')) break
+        tile = tile.parentElement
+      }
+      if (seen.has(tile)) continue
+      seen.add(tile)
+      const name = resolveTileName(tile)
+      if (!name) continue
+      found.push({ tile, name })
+    }
+    return found
+  }
+
+  function closeSpeakerSegment(endedAt) {
+    if (!speakerMonitor.currentSpeaker || !speakerMonitor.segmentStartedAt) {
+      speakerMonitor.currentSpeaker = ''
+      speakerMonitor.segmentStartedAt = ''
+      return
+    }
+    const segment = {
+      speaker: speakerMonitor.currentSpeaker,
+      startedAt: speakerMonitor.segmentStartedAt,
+      endedAt: endedAt || new Date().toISOString()
+    }
+    speakerMonitor.segments.push(segment)
+    speakerMonitor.pending.push(segment)
+    speakerMonitor.currentSpeaker = ''
+    speakerMonitor.segmentStartedAt = ''
+  }
+
+  function openSpeakerSegment(name, startedAt) {
+    if (!name) return
+    if (speakerMonitor.currentSpeaker === name) return
+    closeSpeakerSegment(startedAt)
+    speakerMonitor.currentSpeaker = name
+    speakerMonitor.segmentStartedAt = startedAt || new Date().toISOString()
+  }
+
+  function tickSpeakers() {
+    const now = new Date().toISOString()
+    const tiles = collectParticipantTiles()
+    for (const { name } of tiles) {
+      if (name) speakerMonitor.roster.add(name)
+    }
+
+    const speaking = tiles.filter(({ tile }) => tileLooksActiveSpeaker(tile)).map(({ name }) => name)
+    let next = ''
+    if (speaking.length === 1) {
+      next = speaking[0]
+    } else if (speaking.length > 1) {
+      next = speaking.includes(speakerMonitor.currentSpeaker)
+        ? speakerMonitor.currentSpeaker
+        : speaking[0]
+    }
+
+    if (next) {
+      speakerMonitor.quietTicks = 0
+      openSpeakerSegment(next, now)
+    } else if (speakerMonitor.currentSpeaker) {
+      speakerMonitor.quietTicks += 1
+      // Avoid cutting mid-phrase on a single missed poll (~500ms)
+      if (speakerMonitor.quietTicks >= 2) {
+        closeSpeakerSegment(now)
+        speakerMonitor.quietTicks = 0
+      }
+    }
+
+    const batch = speakerMonitor.pending.splice(0, speakerMonitor.pending.length)
+    return {
+      speakers: speaking,
+      activeSpeaker: next || speakerMonitor.currentSpeaker || '',
+      roster: Array.from(speakerMonitor.roster),
+      segments: batch,
+      monitoring: speakerMonitor.monitoring
+    }
+  }
+
+  function flushSpeakers() {
+    closeSpeakerSegment(new Date().toISOString())
+    const batch = speakerMonitor.pending.splice(0, speakerMonitor.pending.length)
+    return {
+      roster: Array.from(speakerMonitor.roster),
+      segments: [...speakerMonitor.segments],
+      flushed: batch
+    }
+  }
+
+  function startSpeakerMonitor() {
+    speakerMonitor.monitoring = true
+    return { started: true }
+  }
+
+  function stopSpeakerMonitor() {
+    speakerMonitor.monitoring = false
+    return flushSpeakers()
+  }
+
   window.__careMeetCaptions = {
     tick,
     flush,
@@ -895,6 +1124,10 @@
     tryEnableCaptions,
     tryEnableSpeakerNames,
     captionStatus,
-    getCallState
+    getCallState,
+    tickSpeakers,
+    flushSpeakers,
+    startSpeakerMonitor,
+    stopSpeakerMonitor
   }
 })()
