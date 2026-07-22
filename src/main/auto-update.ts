@@ -73,15 +73,24 @@ function registerUpdaterEvents(): void {
   autoUpdater.on('error', (error) => {
     log.error('auto-update', 'Update check failed', error)
     const message = error instanceof Error ? error.message : String(error)
+    const signingHint =
+      /not digitally signed|not trusted by the trust provider|publisherNames|application owner|SignerCertificate/i.test(
+        message
+      )
+        ? ' Installer signing failed trust checks — ask IT to deploy the CARE signing certificate to Trusted Publishers.'
+        : ''
     const privateHint =
-      /401|403|404|private|bad credentials|not found/i.test(message) &&
+      !signingHint &&
+      /(?:\b401\b|\b403\b|\b404\b|bad credentials|releases\.atom|private repo|private repository)/i.test(
+        message
+      ) &&
       !process.env.CARE_GITHUB_UPDATE_TOKEN?.trim()
         ? ' Update feed may be private — ask IT to include CARE_GITHUB_UPDATE_TOKEN in the installer.'
         : ''
     sendUpdateEvent({
       status: 'error',
       version: app.getVersion(),
-      message: `${message}${privateHint}`
+      message: `${message}${signingHint}${privateHint}`
     })
   })
 

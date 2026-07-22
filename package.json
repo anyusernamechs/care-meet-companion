@@ -1,6 +1,6 @@
 {
   "name": "care-meet-companion",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "CARE Meet Companion — host-side Google Meet recording app",
   "main": "out/main/index.js",
   "author": "CARE",
@@ -55,7 +55,10 @@
         "nsis"
       ],
       "icon": "build/icon.ico",
-      "publisherName": "CARE Helps Society",
+      "publisherName": [
+        "Care Human Services",
+        "CARE Helps Society"
+      ],
       "signAndEditExecutable": true,
       "signDlls": true
     },

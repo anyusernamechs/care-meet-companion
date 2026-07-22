@@ -6,7 +6,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts/create-selfsign-cert.ps1 -Password "your-export-password"
 
 param(
-  [string]$Subject = "CN=CARE Meet Companion, O=CARE Helps Society",
+  [string]$Subject = "CN=CARE Meet Companion, O=Care Human Services",
   [int]$YearsValid = 3,
   [string]$OutDir = "",
   [string]$Password = ""

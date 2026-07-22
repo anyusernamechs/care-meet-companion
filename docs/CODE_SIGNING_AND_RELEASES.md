@@ -40,13 +40,19 @@ This writes (gitignored):
 
 Keep the same PFX for every release. If you replace it, staff may need to trust a new cert and auto-update can break.
 
+The certificate subject should use the legal organization name, for example:
+
+`CN=CARE Meet Companion, O=Care Human Services`
+
+`package.json` → `build.win.publisherName` must include that organization string (it can be a list during a rename transition).
+
 
 
 ### IT: trust the cert on staff PCs
 
 
 
-Deploy `care-meet-companion-selfsign.cer` to **Trusted Publishers** for all `@carehelps.ca` machines.
+Deploy `care-meet-companion-selfsign.cer` to **Trusted Publishers** for all Care Human Services machines.
 
 
 
